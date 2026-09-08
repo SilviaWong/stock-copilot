@@ -28,6 +28,8 @@ public class PositionVO {
 
     // 动态行情与收益衍生指标 (接入行情后实时计算)
     private BigDecimal currentPrice;       // 实时现价
+    private BigDecimal changePercent;      // 今日涨跌幅 (%)
+    private BigDecimal dailyPnl;           // 今日持仓盈亏变动 (changeAmount * holdQuantity)
     private BigDecimal marketValue;        // 当前市值 (currentPrice * holdQuantity)
     private BigDecimal floatingPnl;        // 浮动盈亏额 (marketValue - totalCost)
     private BigDecimal floatingPnlRate;    // 浮动盈亏率 (%)

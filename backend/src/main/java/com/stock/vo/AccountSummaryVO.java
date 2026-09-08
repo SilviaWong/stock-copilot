@@ -49,4 +49,24 @@ public class AccountSummaryVO {
      * 当前正在持有的标的数量
      */
     private Integer holdingCount;
+
+    /**
+     * 当前持仓总市值 (元)
+     */
+    private BigDecimal totalMarketValue;
+
+    /**
+     * 当前持仓总浮动盈亏 (元，市值 - 本金)
+     */
+    private BigDecimal totalFloatingPnl;
+
+    /**
+     * 当前持仓总浮动盈亏率 (%)
+     */
+    private BigDecimal totalFloatingPnlRate;
+
+    /**
+     * 今日持仓总浮动盈亏变动 (元)
+     */
+    private BigDecimal totalDailyPnl;
 }

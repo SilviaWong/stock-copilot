@@ -2,6 +2,7 @@ package com.stock.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.stock.common.BusinessException;
+import com.stock.dto.QuoteDTO;
 import com.stock.entity.Position;
 import com.stock.entity.TransactionRecord;
 import com.stock.mapper.PositionMapper;
@@ -14,7 +15,9 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -26,8 +29,11 @@ public class PositionService {
     @Autowired
     private TransactionRecordMapper transactionRecordMapper;
 
+    @Autowired
+    private QuoteService quoteService;
+
     /**
-     * 查询持仓列表
+     * 查询持仓列表 (结合实时行情计算现价、市值、浮动盈亏与预警)
      * @param onlyHolding 是否仅展示当前仍持有的标的 (hold_quantity > 0)
      */
     public List<PositionVO> listPositions(Boolean onlyHolding) {
@@ -38,35 +44,129 @@ public class PositionService {
         wrapper.orderByDesc(Position::getTotalCost);
 
         List<Position> list = positionMapper.selectList(wrapper);
+        if (list.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // 提取所有持仓标的代码，批量拉取最新实时行情
+        List<String> symbols = list.stream()
+                .map(Position::getSymbol)
+                .distinct()
+                .collect(Collectors.toList());
+
+        Map<String, QuoteDTO> quoteMap = quoteService.batchFetchQuotes(symbols);
+
         return list.stream().map(p -> {
             PositionVO vo = new PositionVO();
             BeanUtils.copyProperties(p, vo);
-            // 预留当前市值和浮动盈亏（待接入实时行情时赋值）
-            vo.setCurrentPrice(p.getCostPrice()); // 默认先以成本价作为参考
-            vo.setMarketValue(p.getTotalCost());
-            vo.setFloatingPnl(BigDecimal.ZERO);
-            vo.setFloatingPnlRate(BigDecimal.ZERO);
+
+            QuoteDTO quote = quoteMap.get(p.getSymbol());
+            int holdQuantity = p.getHoldQuantity() != null ? p.getHoldQuantity() : 0;
+            BigDecimal costPrice = p.getCostPrice() != null ? p.getCostPrice() : BigDecimal.ZERO;
+            BigDecimal totalCost = p.getTotalCost() != null ? p.getTotalCost() : BigDecimal.ZERO;
+
+            if (quote != null && quote.getCurrentPrice() != null && quote.getCurrentPrice().compareTo(BigDecimal.ZERO) > 0) {
+                BigDecimal currentPrice = quote.getCurrentPrice();
+                vo.setCurrentPrice(currentPrice);
+                vo.setChangePercent(quote.getChangePercent());
+
+                // 今日持仓盈亏波动额 = 今日涨跌额 * 持仓股数
+                BigDecimal dailyPnl = quote.getChangeAmount() != null
+                        ? quote.getChangeAmount().multiply(BigDecimal.valueOf(holdQuantity)).setScale(2, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+                vo.setDailyPnl(dailyPnl);
+
+                // 当前持仓最新市值 = 实时单价 * 持仓股数
+                BigDecimal marketValue = currentPrice.multiply(BigDecimal.valueOf(holdQuantity)).setScale(2, RoundingMode.HALF_UP);
+                vo.setMarketValue(marketValue);
+
+                if (holdQuantity > 0) {
+                    // 浮动盈亏额 = 最新市值 - 投入总成本
+                    BigDecimal floatingPnl = marketValue.subtract(totalCost).setScale(2, RoundingMode.HALF_UP);
+                    vo.setFloatingPnl(floatingPnl);
+
+                    // 浮动盈亏率 = (当前价 - 成本价) / 成本价 * 100%
+                    if (costPrice.compareTo(BigDecimal.ZERO) > 0) {
+                        BigDecimal pnlRate = currentPrice.subtract(costPrice)
+                                .divide(costPrice, 4, RoundingMode.HALF_UP)
+                                .multiply(BigDecimal.valueOf(100))
+                                .setScale(2, RoundingMode.HALF_UP);
+                        vo.setFloatingPnlRate(pnlRate);
+                    } else {
+                        vo.setFloatingPnlRate(BigDecimal.ZERO);
+                    }
+
+                    // 检查是否达到止盈或止损价
+                    if (p.getTargetTakeProfit() != null && currentPrice.compareTo(p.getTargetTakeProfit()) >= 0) {
+                        vo.setTakeProfitAlert(true);
+                    } else {
+                        vo.setTakeProfitAlert(false);
+                    }
+
+                    if (p.getTargetStopLoss() != null && currentPrice.compareTo(p.getTargetStopLoss()) <= 0) {
+                        vo.setStopLossAlert(true);
+                    } else {
+                        vo.setStopLossAlert(false);
+                    }
+                } else {
+                    // 已清仓
+                    vo.setMarketValue(BigDecimal.ZERO);
+                    vo.setFloatingPnl(BigDecimal.ZERO);
+                    vo.setFloatingPnlRate(BigDecimal.ZERO);
+                }
+            } else {
+                // 降级兜底 (如离线或未收盘拉不到)
+                vo.setCurrentPrice(costPrice);
+                vo.setMarketValue(totalCost);
+                vo.setFloatingPnl(BigDecimal.ZERO);
+                vo.setFloatingPnlRate(BigDecimal.ZERO);
+                vo.setChangePercent(BigDecimal.ZERO);
+                vo.setDailyPnl(BigDecimal.ZERO);
+            }
+
             return vo;
         }).collect(Collectors.toList());
     }
 
     /**
-     * 账户总览看板计算
+     * 账户总览看板计算 (融合实时市值与总浮盈)
      */
     public AccountSummaryVO getAccountSummary() {
-        // 1. 当前持仓总投入
-        List<Position> holdingPositions = positionMapper.selectList(
-                new LambdaQueryWrapper<Position>().gt(Position::getHoldQuantity, 0)
-        );
-        BigDecimal totalHoldCost = holdingPositions.stream()
-                .map(p -> p.getTotalCost() != null ? p.getTotalCost() : BigDecimal.ZERO)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // 1. 获取持仓列表计算实时资产
+        List<PositionVO> holdingList = listPositions(true);
+
+        BigDecimal totalHoldCost = BigDecimal.ZERO;
+        BigDecimal totalMarketValue = BigDecimal.ZERO;
+        BigDecimal totalFloatingPnl = BigDecimal.ZERO;
+        BigDecimal totalDailyPnl = BigDecimal.ZERO;
+
+        for (PositionVO p : holdingList) {
+            if (p.getTotalCost() != null) {
+                totalHoldCost = totalHoldCost.add(p.getTotalCost());
+            }
+            if (p.getMarketValue() != null) {
+                totalMarketValue = totalMarketValue.add(p.getMarketValue());
+            }
+            if (p.getFloatingPnl() != null) {
+                totalFloatingPnl = totalFloatingPnl.add(p.getFloatingPnl());
+            }
+            if (p.getDailyPnl() != null) {
+                totalDailyPnl = totalDailyPnl.add(p.getDailyPnl());
+            }
+        }
+
+        BigDecimal totalFloatingPnlRate = BigDecimal.ZERO;
+        if (totalHoldCost.compareTo(BigDecimal.ZERO) > 0) {
+            totalFloatingPnlRate = totalFloatingPnl
+                    .divide(totalHoldCost, 4, RoundingMode.HALF_UP)
+                    .multiply(BigDecimal.valueOf(100))
+                    .setScale(2, RoundingMode.HALF_UP);
+        }
 
         // 2. 历史所有流水统计
         List<TransactionRecord> allRecords = transactionRecordMapper.selectList(null);
         int totalTrades = allRecords.size();
 
-        // 统计所有卖出操作的盈亏
         List<TransactionRecord> sellRecords = allRecords.stream()
                 .filter(r -> "SELL".equalsIgnoreCase(r.getAction()))
                 .collect(Collectors.toList());
@@ -93,12 +193,16 @@ public class PositionService {
 
         return AccountSummaryVO.builder()
                 .totalHoldCost(totalHoldCost)
+                .totalMarketValue(totalMarketValue)
+                .totalFloatingPnl(totalFloatingPnl)
+                .totalFloatingPnlRate(totalFloatingPnlRate)
+                .totalDailyPnl(totalDailyPnl)
                 .totalRealizedPnl(totalRealizedPnl)
                 .totalTrades(totalTrades)
                 .totalSells(totalSells)
                 .profitableSells(profitableSells)
                 .winRate(winRate)
-                .holdingCount(holdingPositions.size())
+                .holdingCount(holdingList.size())
                 .build();
     }
 
