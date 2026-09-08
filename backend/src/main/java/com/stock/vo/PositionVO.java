@@ -35,4 +35,10 @@ public class PositionVO {
     private BigDecimal floatingPnlRate;    // 浮动盈亏率 (%)
     private Boolean takeProfitAlert;       // 是否达到止盈价
     private Boolean stopLossAlert;         // 是否跌破止损价
+
+    // 券商口径指标 (做T盈亏摊薄保本法)
+    private BigDecimal dilutedCostPrice;   // 摊薄成本价 (保本价 = 摊薄总成本 / 持仓股数)
+    private BigDecimal dilutedTotalCost;   // 摊薄总成本 (累计买入 - 累计卖出/分红 + 手续费)
+    private BigDecimal totalPnl;           // 标的历史累计总盈亏 (市值 - 摊薄总成本 = 浮盈 + 已落袋)
+    private BigDecimal totalPnlRate;       // 标的累计总收益率 (%)
 }

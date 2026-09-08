@@ -16,10 +16,11 @@
           </b>
         </div>
       </div>
-      <div style="display: flex; gap: 24px; font-size: 13px; color: #606266;">
+      <div style="display: flex; gap: 20px; font-size: 13px; color: #606266; flex-wrap: wrap;">
         <div>当前持仓: <b style="color: #303133;">{{ positionData.holdQuantity }}</b> 股</div>
-        <div>当前保本均价: <b style="color: #303133;">{{ positionData.costPrice }}</b> 元</div>
-        <div>当前累计投入: <b style="color: #303133;">¥ {{ positionData.totalCost }}</b> 元</div>
+        <div>买入均价: <b style="color: #409eff;">¥ {{ positionData.costPrice }}</b></div>
+        <div v-if="positionData.dilutedCostPrice">摊薄成本(保本): <b style="color: #e6a23c;">¥ {{ Number(positionData.dilutedCostPrice).toFixed(3) }}</b></div>
+        <div>投入本金: <b style="color: #303133;">¥ {{ positionData.totalCost }}</b></div>
       </div>
     </div>
 

@@ -56,6 +56,15 @@ public class PositionService {
 
         Map<String, QuoteDTO> quoteMap = quoteService.batchFetchQuotes(symbols);
 
+        // 批量查询相关标的所有历史流水以计算券商摊薄保本成本
+        List<TransactionRecord> allRecords = symbols.isEmpty()
+                ? Collections.emptyList()
+                : transactionRecordMapper.selectList(
+                        new LambdaQueryWrapper<TransactionRecord>().in(TransactionRecord::getSymbol, symbols)
+                  );
+        Map<String, List<TransactionRecord>> recordsBySymbol = allRecords.stream()
+                .collect(Collectors.groupingBy(TransactionRecord::getSymbol));
+
         return list.stream().map(p -> {
             PositionVO vo = new PositionVO();
             BeanUtils.copyProperties(p, vo);
@@ -122,6 +131,55 @@ public class PositionService {
                 vo.setFloatingPnlRate(BigDecimal.ZERO);
                 vo.setChangePercent(BigDecimal.ZERO);
                 vo.setDailyPnl(BigDecimal.ZERO);
+            }
+
+            // 计算券商口径指标 (盈亏摊薄法 / 做T保本价)
+            List<TransactionRecord> symbolRecords = recordsBySymbol.getOrDefault(p.getSymbol(), Collections.emptyList());
+            BigDecimal totalBuyCash = BigDecimal.ZERO;
+            BigDecimal totalSellCash = BigDecimal.ZERO;
+            BigDecimal totalFees = BigDecimal.ZERO;
+
+            for (TransactionRecord r : symbolRecords) {
+                BigDecimal fee = r.getFee() != null ? r.getFee() : BigDecimal.ZERO;
+                totalFees = totalFees.add(fee);
+                if ("BUY".equalsIgnoreCase(r.getAction())) {
+                    totalBuyCash = totalBuyCash.add(r.getAmount());
+                } else if ("SELL".equalsIgnoreCase(r.getAction()) || "DIVIDEND".equalsIgnoreCase(r.getAction())) {
+                    totalSellCash = totalSellCash.add(r.getAmount());
+                }
+            }
+
+            BigDecimal dilutedTotalCost;
+            BigDecimal dilutedCostPrice;
+
+            if (symbolRecords.isEmpty()) {
+                dilutedTotalCost = totalCost;
+                dilutedCostPrice = costPrice;
+            } else {
+                dilutedTotalCost = totalBuyCash.subtract(totalSellCash).add(totalFees);
+                if (holdQuantity > 0) {
+                    dilutedCostPrice = dilutedTotalCost.divide(BigDecimal.valueOf(holdQuantity), 4, RoundingMode.HALF_UP);
+                } else {
+                    dilutedCostPrice = BigDecimal.ZERO;
+                }
+            }
+
+            vo.setDilutedTotalCost(dilutedTotalCost);
+            vo.setDilutedCostPrice(dilutedCostPrice);
+
+            // 标的历史累计总盈亏 = 当前最新市值 - 摊薄总成本 (若已清仓则为 -dilutedTotalCost，即历史净落袋)
+            BigDecimal currentMarketVal = vo.getMarketValue() != null ? vo.getMarketValue() : totalCost;
+            BigDecimal totalPnl = currentMarketVal.subtract(dilutedTotalCost).setScale(2, RoundingMode.HALF_UP);
+            vo.setTotalPnl(totalPnl);
+
+            // 标的累计总收益率
+            if (dilutedTotalCost.compareTo(BigDecimal.ZERO) > 0) {
+                BigDecimal totalPnlRate = totalPnl.divide(dilutedTotalCost, 4, RoundingMode.HALF_UP)
+                        .multiply(BigDecimal.valueOf(100))
+                        .setScale(2, RoundingMode.HALF_UP);
+                vo.setTotalPnlRate(totalPnlRate);
+            } else {
+                vo.setTotalPnlRate(BigDecimal.ZERO);
             }
 
             return vo;
@@ -191,6 +249,8 @@ public class PositionService {
                     .setScale(2, RoundingMode.HALF_UP);
         }
 
+        BigDecimal totalNetProfit = totalFloatingPnl.add(totalRealizedPnl);
+
         return AccountSummaryVO.builder()
                 .totalHoldCost(totalHoldCost)
                 .totalMarketValue(totalMarketValue)
@@ -198,6 +258,7 @@ public class PositionService {
                 .totalFloatingPnlRate(totalFloatingPnlRate)
                 .totalDailyPnl(totalDailyPnl)
                 .totalRealizedPnl(totalRealizedPnl)
+                .totalNetProfit(totalNetProfit)
                 .totalTrades(totalTrades)
                 .totalSells(totalSells)
                 .profitableSells(profitableSells)

@@ -96,3 +96,63 @@ export function getQuoteDetail(symbol) {
   })
 }
 
+/**
+ * 直接录入已有底仓或就地调整持仓
+ */
+export function initHolding(data) {
+  return instance.post('/position/init', data)
+}
+
+/**
+ * 修改单笔交易流水
+ */
+export function updateTrade(id, data) {
+  return instance.put(`/trade/${id}`, data)
+}
+
+/**
+ * 删除某个标的的所有持仓与交易流水
+ */
+export function deletePosition(symbol) {
+  return instance.delete(`/position/${symbol}`)
+}
+
+/**
+ * 一键重置清空全部数据
+ */
+export function resetAllData() {
+  return instance.post('/position/reset')
+}
+
+/**
+ * 测试大模型代理配置连通性
+ */
+export function testAiConnection(config) {
+  return instance.post('/ocr/test-connection', config, { timeout: 20000 })
+}
+
+/**
+ * 上传截图并调用多模态视觉大模型解析交易列表 (设置90秒超时)
+ */
+export function parseScreenshotTrades(payload) {
+  return instance.post('/ocr/parse-trades', payload, { timeout: 90000 })
+}
+
+/**
+ * 粘贴券商文本解析交易流水
+ */
+export function parseTextTrades(rawText) {
+  return instance.post('/ocr/parse-text', rawText, {
+    headers: { 'Content-Type': 'text/plain' },
+  })
+}
+
+/**
+ * 批量入库已核对的交易流水
+ */
+export function batchRecordTrades(trades) {
+  return instance.post('/trade/batch', trades)
+}
+
+
+

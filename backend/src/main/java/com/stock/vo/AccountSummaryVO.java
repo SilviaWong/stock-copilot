@@ -69,4 +69,9 @@ public class AccountSummaryVO {
      * 今日持仓总浮动盈亏变动 (元)
      */
     private BigDecimal totalDailyPnl;
+
+    /**
+     * 账户历史综合总净收益 (持仓浮盈 + 累计已落袋盈利，与券商总盈利口径一致)
+     */
+    private BigDecimal totalNetProfit;
 }

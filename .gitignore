@@ -3,18 +3,26 @@
 backend/target/
 *.class
 
-# IDE
+# IDE & OS
 .idea/
 *.iml
 .vscode/
 .DS_Store
 
-# Logs & Database
+# Logs
 *.log
 backend/logs/
+
+# SQLite Database files (严禁提交任何个人真实交易数据)
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+!data/.gitkeep
 
 # Build output
 frontend/dist/

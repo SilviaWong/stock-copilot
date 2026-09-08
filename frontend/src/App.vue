@@ -6,7 +6,7 @@
         <div class="logo-icon">📈</div>
         <div>
           <h1 class="app-title">Stock Copilot 投资助手</h1>
-          <p class="app-subtitle">A股 / 场内ETF · 实时行情 · 成本摊薄 · 盈亏归因 · 辅助建议</p>
+          <p class="app-subtitle">A股 / 场内ETF · 真实持仓建档 · 实时行情 · 成本摊薄 · 辅助决策</p>
         </div>
       </div>
       <div class="header-right">
@@ -15,9 +15,34 @@
           <el-switch v-model="autoRefresh" @change="toggleAutoRefresh" />
         </div>
         <el-button :icon="Refresh" circle :loading="refreshing" @click="loadAllData" title="刷新最新行情与资产" />
+        
+        <!-- 截图导入流水 (多模态视觉识别) -->
+        <el-button type="warning" size="large" :icon="Camera" @click="openScreenshotDialog()">
+          📷 截图导入流水
+        </el-button>
+
+        <!-- 录入已有持仓底仓 (最省事) -->
+        <el-button type="success" size="large" :icon="DocumentAdd" @click="openInitHoldingDialog()">
+          录入已有底仓
+        </el-button>
+
+        <!-- 记一笔买卖流水 -->
         <el-button type="primary" size="large" :icon="Plus" @click="openAddTradeDialog()">
           记一笔交易
         </el-button>
+
+        <!-- 危险操作：清空重置 -->
+        <el-popconfirm
+          title="确定要清空全部交易记录和持仓数据吗？清空后不可恢复！"
+          confirm-button-text="确定清空"
+          cancel-button-text="取消"
+          confirm-button-type="danger"
+          @confirm="handleResetAll"
+        >
+          <template #reference>
+            <el-button type="danger" plain circle :icon="Delete" title="清空重置所有数据" />
+          </template>
+        </el-popconfirm>
       </div>
     </header>
 
@@ -63,6 +88,12 @@
         <div class="stat-sub">
           清仓/减仓 {{ summary.totalSells || 0 }} 笔，其中盈利 {{ summary.profitableSells || 0 }} 笔
         </div>
+        <div v-if="summary.totalNetProfit !== undefined" class="stat-sub" style="margin-top: 4px; border-top: 1px dashed #ebeef5; padding-top: 4px;">
+          综合总收益(含浮盈):
+          <b :class="getAmountColorClass(summary.totalNetProfit)">
+            {{ formatPnl(summary.totalNetProfit) }}
+          </b>
+        </div>
       </el-card>
 
       <el-card class="stat-card" shadow="hover">
@@ -104,7 +135,7 @@
             stripe
             border
             style="width: 100%"
-            empty-text="暂无持仓记录，点击右上角「记一笔交易」开启记录"
+            empty-text="暂无真实持仓记录，可点击上方「录入已有底仓」或「记一笔交易」快速建档"
           >
             <el-table-column prop="symbol" label="标的代码" width="120">
               <template #default="{ row }">
@@ -118,7 +149,6 @@
             <el-table-column prop="name" label="标的名称" min-width="140">
               <template #default="{ row }">
                 <div style="font-weight: 600; color: #303133;">{{ row.name }}</div>
-                <!-- 预警提示标签 -->
                 <div style="margin-top: 2px;">
                   <el-tag v-if="row.takeProfitAlert" size="small" type="danger" effect="dark">
                     🎉 触及止盈价
@@ -144,11 +174,37 @@
               </template>
             </el-table-column>
 
-            <el-table-column prop="costPrice" label="持仓均价(保本)" width="130" align="right">
+            <!-- 买入均价 -->
+            <el-table-column prop="costPrice" width="125" align="right">
+              <template #header>
+                <span>买入均价</span>
+                <el-tooltip content="当前持仓筹码的实际加权平均买入成本（不掺杂已落袋做T利润）" placement="top">
+                  <el-icon style="margin-left: 2px; vertical-align: middle; cursor: pointer; color: #909399;"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </template>
               <template #default="{ row }">
                 <span class="num-font" style="font-weight: bold; color: #409eff;">
                   ¥ {{ Number(row.costPrice).toFixed(4) }}
                 </span>
+              </template>
+            </el-table-column>
+
+            <!-- 摊薄成本价 (券商保本价) -->
+            <el-table-column prop="dilutedCostPrice" width="140" align="right">
+              <template #header>
+                <span style="color: #e6a23c; font-weight: bold;">摊薄成本(券商)</span>
+                <el-tooltip content="扣除历史做T已落袋利润后的保本成本单价，与券商App成本价口径完全一致" placement="top">
+                  <el-icon style="margin-left: 2px; vertical-align: middle; cursor: pointer; color: #e6a23c;"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </template>
+              <template #default="{ row }">
+                <div v-if="row.holdQuantity > 0">
+                  <span class="num-font" style="font-weight: bold; color: #e6a23c; font-size: 14px;">
+                    ¥ {{ row.dilutedCostPrice !== undefined && row.dilutedCostPrice !== null ? Number(row.dilutedCostPrice).toFixed(3) : Number(row.costPrice).toFixed(3) }}
+                  </span>
+                  <div style="font-size: 11px; color: #909399;">保本底线</div>
+                </div>
+                <span v-else style="color: #c0c4cc;">-</span>
               </template>
             </el-table-column>
 
@@ -170,11 +226,17 @@
               </template>
             </el-table-column>
 
-            <!-- 实时浮动盈亏 (金额 + 收益率) -->
-            <el-table-column label="浮动盈亏 (率)" width="150" align="right">
+            <!-- 实时持仓浮动盈亏 -->
+            <el-table-column label="持仓浮盈(率)" width="135" align="right">
+              <template #header>
+                <span>持仓浮盈(率)</span>
+                <el-tooltip content="仅计算当前仍持有的筹码相比买入均价的未实现浮动盈亏" placement="top">
+                  <el-icon style="margin-left: 2px; vertical-align: middle; cursor: pointer; color: #909399;"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </template>
               <template #default="{ row }">
                 <div v-if="row.holdQuantity > 0">
-                  <div class="num-font" :class="getAmountColorClass(row.floatingPnl)" style="font-size: 14px; font-weight: bold;">
+                  <div class="num-font" :class="getAmountColorClass(row.floatingPnl)" style="font-size: 13px; font-weight: bold;">
                     {{ formatPnl(row.floatingPnl) }}
                   </div>
                   <div style="font-size: 12px;" :class="getAmountColorClass(row.floatingPnlRate)">
@@ -185,13 +247,31 @@
               </template>
             </el-table-column>
 
+            <!-- 标的累计总盈亏 (含做T落袋，与券商App大红字一致) -->
+            <el-table-column label="累计总盈亏(券商)" width="150" align="right">
+              <template #header>
+                <span style="color: #e6a23c; font-weight: bold;">累计总盈亏(券商)</span>
+                <el-tooltip content="标的当前市值 - 摊薄总成本（包含历史做T已落袋盈利+持仓浮盈），与券商App显示的标的总盈亏完全一致" placement="top">
+                  <el-icon style="margin-left: 2px; vertical-align: middle; cursor: pointer; color: #e6a23c;"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </template>
+              <template #default="{ row }">
+                <div class="num-font" :class="getAmountColorClass(row.totalPnl)" style="font-size: 14px; font-weight: bold;">
+                  {{ formatPnl(row.totalPnl) }}
+                </div>
+                <div v-if="row.totalPnlRate" style="font-size: 12px;" :class="getAmountColorClass(row.totalPnlRate)">
+                  {{ formatRate(row.totalPnlRate) }}
+                </div>
+              </template>
+            </el-table-column>
+
             <el-table-column prop="totalCost" label="投入成本" width="120" align="right">
               <template #default="{ row }">
                 <span class="num-font" style="color: #606266;">¥ {{ Number(row.totalCost).toFixed(2) }}</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="目标止盈/止损" width="150">
+            <el-table-column label="目标止盈/止损" width="140">
               <template #default="{ row }">
                 <div v-if="row.targetTakeProfit || row.targetStopLoss" style="font-size: 12px; line-height: 1.5;">
                   <div v-if="row.targetTakeProfit" style="color: #f56c6c;">
@@ -207,7 +287,7 @@
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="280" fixed="right">
+            <el-table-column label="操作" width="310" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="handleBuyMore(row)">
                   加仓
@@ -237,11 +317,27 @@
                   :disabled="row.holdQuantity <= 0"
                   @click="openSimulator(row)"
                 >
-                  🧮 加仓测算
+                  🧮 测算
                 </el-button>
-                <el-button link type="info" size="small" @click="openTargetDialog(row)">
-                  设置
+                <el-button link type="warning" size="small" @click="openScreenshotDialog(row)">
+                  📷 导入流水
                 </el-button>
+                <el-button link type="info" size="small" @click="editHolding(row)">
+                  ✏️ 编辑
+                </el-button>
+                <el-popconfirm
+                  title="确定删除此标的全部持仓及历史记录？"
+                  confirm-button-text="删除"
+                  cancel-button-text="取消"
+                  confirm-button-type="danger"
+                  @confirm="handleDeletePosition(row.symbol)"
+                >
+                  <template #reference>
+                    <el-button link type="danger" size="small">
+                      🗑️
+                    </el-button>
+                  </template>
+                </el-popconfirm>
               </template>
             </el-table-column>
           </el-table>
@@ -346,8 +442,9 @@
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="80" align="center" fixed="right">
+            <el-table-column label="操作" width="130" align="center" fixed="right">
               <template #default="{ row }">
+                <el-button link type="primary" size="small" @click="editTrade(row)">编辑</el-button>
                 <el-popconfirm
                   title="确定撤销此笔流水？系统将自动重新回放持仓并校准账目。"
                   confirm-button-text="确定"
@@ -365,23 +462,25 @@
       </el-tabs>
     </el-card>
 
-    <!-- 记一笔弹窗 -->
+    <!-- 弹窗组件群 -->
     <AddTradeDialog ref="addTradeDialogRef" @success="loadAllData" />
-
-    <!-- 加仓模拟测算器 -->
+    <InitPositionDialog ref="initPositionDialogRef" @success="loadAllData" />
+    <EditTradeDialog ref="editTradeDialogRef" @success="loadAllData" />
+    <ScreenshotImportDialog ref="screenshotImportDialogRef" @success="loadAllData" />
     <CostSimulatorDialog ref="simulatorDialogRef" @apply-trade="openAddTradeWithValues" />
-
-    <!-- 止盈止损线设置 -->
     <TargetPriceDialog ref="targetDialogRef" @success="loadPositions" />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search, DocumentAdd, Delete, Camera, QuestionFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { getAccountSummary, getPositionList, getTradeHistory, deleteTrade } from './api'
+import { getAccountSummary, getPositionList, getTradeHistory, deleteTrade, deletePosition, resetAllData } from './api'
 import AddTradeDialog from './components/AddTradeDialog.vue'
+import InitPositionDialog from './components/InitPositionDialog.vue'
+import EditTradeDialog from './components/EditTradeDialog.vue'
+import ScreenshotImportDialog from './components/ScreenshotImportDialog.vue'
 import CostSimulatorDialog from './components/CostSimulatorDialog.vue'
 import TargetPriceDialog from './components/TargetPriceDialog.vue'
 
@@ -400,6 +499,9 @@ const loadingPositions = ref(false)
 const loadingHistory = ref(false)
 
 const addTradeDialogRef = ref(null)
+const initPositionDialogRef = ref(null)
+const editTradeDialogRef = ref(null)
+const screenshotImportDialogRef = ref(null)
 const simulatorDialogRef = ref(null)
 const targetDialogRef = ref(null)
 
@@ -477,6 +579,22 @@ function openAddTradeDialog() {
   addTradeDialogRef.value?.open()
 }
 
+function openScreenshotDialog(stock) {
+  screenshotImportDialogRef.value?.open(stock)
+}
+
+function openInitHoldingDialog() {
+  initPositionDialogRef.value?.open()
+}
+
+function editHolding(row) {
+  initPositionDialogRef.value?.open(row)
+}
+
+function editTrade(row) {
+  editTradeDialogRef.value?.open(row)
+}
+
 function handleBuyMore(row) {
   addTradeDialogRef.value?.open({
     action: 'BUY',
@@ -521,10 +639,30 @@ function openTargetDialog(row) {
   targetDialogRef.value?.open(row)
 }
 
+async function handleDeletePosition(symbol) {
+  try {
+    await deletePosition(symbol)
+    ElMessage.success(`标的 [${symbol}] 及其全部流水已删除！`)
+    loadAllData()
+  } catch (err) {
+    console.error(err)
+  }
+}
+
 async function handleDeleteTrade(id) {
   try {
     await deleteTrade(id)
     ElMessage.success('流水已撤销，持仓已自动回放重算完成！')
+    loadAllData()
+  } catch (err) {
+    console.error(err)
+  }
+}
+
+async function handleResetAll() {
+  try {
+    await resetAllData()
+    ElMessage.success('所有交易与持仓数据已全部重置清空！')
     loadAllData()
   } catch (err) {
     console.error(err)
@@ -570,7 +708,7 @@ function formatRate(val) {
 
 <style scoped>
 .app-container {
-  max-width: 1320px;
+  max-width: 1360px;
   margin: 0 auto;
   padding: 24px 20px 48px;
 }
@@ -608,7 +746,7 @@ function formatRate(val) {
 .header-right {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
 }
 
 .auto-refresh-wrap {

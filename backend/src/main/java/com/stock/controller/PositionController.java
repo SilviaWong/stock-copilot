@@ -36,6 +36,36 @@ public class PositionController {
         return Result.success(positionService.getAccountSummary());
     }
 
+    @Autowired
+    private com.stock.service.TradeService tradeService;
+
+    /**
+     * 直接录入已有底仓或调整持仓 (免去翻看过去流水)
+     */
+    @PostMapping("/init")
+    public Result<com.stock.entity.Position> initHolding(@RequestBody com.stock.dto.PositionInitRequest request) {
+        com.stock.entity.Position pos = tradeService.initOrUpdateHolding(request);
+        return Result.success(pos);
+    }
+
+    /**
+     * 删除标的的所有持仓与历史流水
+     */
+    @DeleteMapping("/{symbol}")
+    public Result<Void> deletePosition(@PathVariable("symbol") String symbol) {
+        tradeService.deletePositionAndRecords(symbol);
+        return Result.success();
+    }
+
+    /**
+     * 一键重置清空全部测试/历史数据 (恢复至全新状态)
+     */
+    @PostMapping("/reset")
+    public Result<Void> resetAllData() {
+        tradeService.resetAllData();
+        return Result.success();
+    }
+
     /**
      * 设置标的的目标止盈价与止损价
      */

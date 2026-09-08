@@ -33,6 +33,15 @@ public class TradeController {
     }
 
     /**
+     * 批量录入多笔交易记录 (截图或批量导入)
+     */
+    @PostMapping("/batch")
+    public Result<List<TransactionRecord>> batchRecordTrades(@RequestBody List<TradeRequest> requests) {
+        List<TransactionRecord> list = tradeService.batchRecordTrades(requests);
+        return Result.success(list);
+    }
+
+    /**
      * 查询交易流水历史 (按时间倒序)
      */
     @GetMapping("/history")
@@ -45,6 +54,15 @@ public class TradeController {
         wrapper.orderByDesc(TransactionRecord::getTradeTime)
                .orderByDesc(TransactionRecord::getId);
         return Result.success(transactionRecordMapper.selectList(wrapper));
+    }
+
+    /**
+     * 修改单笔交易流水并重新回放重算持仓
+     */
+    @PutMapping("/{id}")
+    public Result<TransactionRecord> updateRecord(@PathVariable("id") Long id, @RequestBody TradeRequest request) {
+        TransactionRecord record = tradeService.updateTransaction(id, request);
+        return Result.success(record);
     }
 
     /**
