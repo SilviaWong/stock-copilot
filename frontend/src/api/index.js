@@ -154,5 +154,43 @@ export function batchRecordTrades(trades) {
   return instance.post('/trade/batch', trades)
 }
 
+/**
+ * 与 AI 投资副驾交互对话
+ */
+export function chatWithCopilot(payload) {
+  return instance.post('/copilot/chat', payload, { timeout: 60000 })
+}
 
+/**
+ * 一键全盘持仓与风险诊断
+ */
+export function diagnoseAccount(config) {
+  return instance.post('/copilot/diagnose', config, { timeout: 60000 })
+}
 
+/**
+ * 获取标的 1 日分时图数据
+ */
+export function getMinuteChart(symbol) {
+  return instance.get('/quote/minute', {
+    params: { symbol },
+  })
+}
+
+/**
+ * 获取标的 5 日分时走势数据
+ */
+export function getFiveDayChart(symbol) {
+  return instance.get('/quote/five-day', {
+    params: { symbol },
+  })
+}
+
+/**
+ * 获取标的日 K 线走势数据 (含蜡烛图、均线与买卖打点)
+ */
+export function getKlineChart(symbol) {
+  return instance.get('/quote/kline', {
+    params: { symbol },
+  })
+}

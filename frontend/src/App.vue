@@ -16,6 +16,11 @@
         </div>
         <el-button :icon="Refresh" circle :loading="refreshing" @click="loadAllData" title="刷新最新行情与资产" />
         
+        <!-- AI 投资副驾 (智能投顾 & 做T决策) -->
+        <el-button type="primary" size="large" @click="openCopilotDrawer()">
+          🤖 AI 投资副驾
+        </el-button>
+
         <!-- 截图导入流水 (多模态视觉识别) -->
         <el-button type="warning" size="large" :icon="Camera" @click="openScreenshotDialog()">
           📷 截图导入流水
@@ -146,9 +151,24 @@
               </template>
             </el-table-column>
 
-            <el-table-column prop="name" label="标的名称" min-width="140">
+            <el-table-column prop="name" label="标的名称" min-width="150">
               <template #default="{ row }">
-                <div style="font-weight: 600; color: #303133;">{{ row.name }}</div>
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <span
+                    class="clickable-stock-name"
+                    title="点击打开行情分时/五日/日K走势图与打点复盘"
+                    @click="openChartDialog(row)"
+                  >
+                    {{ row.name }}
+                  </span>
+                  <el-icon
+                    style="color: #409eff; cursor: pointer;"
+                    title="查看行情分时与K线复盘"
+                    @click="openChartDialog(row)"
+                  >
+                    <TrendCharts />
+                  </el-icon>
+                </div>
                 <div style="margin-top: 2px;">
                   <el-tag v-if="row.takeProfitAlert" size="small" type="danger" effect="dark">
                     🎉 触及止盈价
@@ -171,6 +191,56 @@
                     {{ row.changePercent >= 0 ? '+' : '' }}{{ Number(row.changePercent).toFixed(2) }}%
                   </span>
                 </div>
+              </template>
+            </el-table-column>
+
+            <!-- 智能决策推荐信号 (网格做T / 加仓止盈) -->
+            <el-table-column label="💡 决策建议 / 信号" min-width="260">
+              <template #default="{ row }">
+                <div v-if="row.tradeSignal && row.holdQuantity > 0">
+                  <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap;">
+                    <el-tag :type="row.tradeSignal.level || 'info'" size="small" effect="dark" style="font-weight: bold;">
+                      {{ row.tradeSignal.title }}
+                    </el-tag>
+                    <el-button
+                      v-if="row.tradeSignal.signalType === 'BUY'"
+                      link
+                      type="success"
+                      size="small"
+                      style="font-size: 12px; font-weight: bold;"
+                      @click="applySignalToTrade(row, 'BUY')"
+                    >
+                      ⚡ 一键低吸
+                    </el-button>
+                    <el-button
+                      v-else-if="row.tradeSignal.signalType === 'SELL'"
+                      link
+                      type="warning"
+                      size="small"
+                      style="font-size: 12px; font-weight: bold;"
+                      @click="applySignalToTrade(row, 'SELL')"
+                    >
+                      ⚡ 一键高抛
+                    </el-button>
+                    <el-button
+                      link
+                      type="primary"
+                      size="small"
+                      style="font-size: 11px;"
+                      @click="askCopilotForSymbol(row)"
+                    >
+                      问AI副驾 🤖
+                    </el-button>
+                  </div>
+                  <div style="font-size: 12px; color: #606266; line-height: 1.45;">
+                    {{ row.tradeSignal.description }}
+                  </div>
+                </div>
+                <div v-else-if="row.tradeSignal">
+                  <el-tag size="small" type="info">{{ row.tradeSignal.title }}</el-tag>
+                  <span style="font-size: 12px; color: #909399; margin-left: 6px;">{{ row.tradeSignal.description }}</span>
+                </div>
+                <span v-else style="color: #c0c4cc;">-</span>
               </template>
             </el-table-column>
 
@@ -287,8 +357,11 @@
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="310" fixed="right">
+            <el-table-column label="操作" width="380" fixed="right">
               <template #default="{ row }">
+                <el-button type="success" plain size="small" :icon="TrendCharts" @click="openChartDialog(row)">
+                  走势图
+                </el-button>
                 <el-button link type="primary" size="small" @click="handleBuyMore(row)">
                   加仓
                 </el-button>
@@ -442,8 +515,9 @@
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="130" align="center" fixed="right">
+            <el-table-column label="操作" width="170" align="center" fixed="right">
               <template #default="{ row }">
+                <el-button link type="success" size="small" :icon="TrendCharts" @click="openChartDialog(row)">走势</el-button>
                 <el-button link type="primary" size="small" @click="editTrade(row)">编辑</el-button>
                 <el-popconfirm
                   title="确定撤销此笔流水？系统将自动重新回放持仓并校准账目。"
@@ -469,12 +543,25 @@
     <ScreenshotImportDialog ref="screenshotImportDialogRef" @success="loadAllData" />
     <CostSimulatorDialog ref="simulatorDialogRef" @apply-trade="openAddTradeWithValues" />
     <TargetPriceDialog ref="targetDialogRef" @success="loadPositions" />
+    <AiCopilotDrawer ref="copilotDrawerRef" />
+    <StockChartDialog
+      v-model="chartDialogVisible"
+      :symbol="currentChartSymbol"
+      :name="currentChartName"
+    />
+
+    <!-- 悬浮触发按钮：随叫随到的 AI 投资副驾 -->
+    <div class="floating-copilot-btn" title="点击唤醒 AI 投资副驾" @click="openCopilotDrawer()">
+      <div class="copilot-pulse"></div>
+      <span class="btn-icon">🤖</span>
+      <span class="btn-text">AI 投资副驾</span>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { Plus, Refresh, Search, DocumentAdd, Delete, Camera, QuestionFilled } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search, DocumentAdd, Delete, Camera, QuestionFilled, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { getAccountSummary, getPositionList, getTradeHistory, deleteTrade, deletePosition, resetAllData } from './api'
 import AddTradeDialog from './components/AddTradeDialog.vue'
@@ -483,6 +570,8 @@ import EditTradeDialog from './components/EditTradeDialog.vue'
 import ScreenshotImportDialog from './components/ScreenshotImportDialog.vue'
 import CostSimulatorDialog from './components/CostSimulatorDialog.vue'
 import TargetPriceDialog from './components/TargetPriceDialog.vue'
+import AiCopilotDrawer from './components/AiCopilotDrawer.vue'
+import StockChartDialog from './components/StockChartDialog.vue'
 
 const activeTab = ref('positions')
 const onlyHolding = ref(true)
@@ -504,6 +593,18 @@ const editTradeDialogRef = ref(null)
 const screenshotImportDialogRef = ref(null)
 const simulatorDialogRef = ref(null)
 const targetDialogRef = ref(null)
+
+// 走势图弹窗状态
+const chartDialogVisible = ref(false)
+const currentChartSymbol = ref('')
+const currentChartName = ref('')
+
+function openChartDialog(row) {
+  if (!row || !row.symbol) return
+  currentChartSymbol.value = row.symbol
+  currentChartName.value = row.name || ''
+  chartDialogVisible.value = true
+}
 
 let timer = null
 
@@ -637,6 +738,33 @@ function openAddTradeWithValues(params) {
 
 function openTargetDialog(row) {
   targetDialogRef.value?.open(row)
+}
+
+const copilotDrawerRef = ref(null)
+
+function openCopilotDrawer(initialPrompt) {
+  copilotDrawerRef.value?.openDrawer(initialPrompt)
+}
+
+function askCopilotForSymbol(row) {
+  const signalDesc = row.tradeSignal ? `系统决策信号: 【${row.tradeSignal.title}】 (${row.tradeSignal.description})` : '暂无特定信号'
+  const prompt = `请帮我重点深度推演分析标的 【${row.name} (${row.symbol})】。\n当前实时现价: ¥${row.currentPrice}，买入均价: ¥${row.costPrice}，做T保本价: ¥${row.dilutedCostPrice || row.costPrice}，持仓数量: ${row.holdQuantity} 股，累计总盈亏: ¥${row.totalPnl}。\n${signalDesc}。\n请给出具体的实操指令：今天适合加仓、减仓做T还是继续观望？建议的具体挂单价位与手数是多少？`
+  openCopilotDrawer(prompt)
+}
+
+function applySignalToTrade(row, action) {
+  if (!row.tradeSignal) return
+  const suggestedPrice = row.tradeSignal.suggestedPrice || row.currentPrice || row.costPrice
+  const suggestedQty = row.tradeSignal.suggestedQuantity || 1000
+  openAddTradeWithValues({
+    symbol: row.symbol,
+    name: row.name,
+    action: action,
+    price: suggestedPrice,
+    quantity: suggestedQty,
+    strategyTag: action === 'BUY' ? '网格低吸加仓' : '波段高抛做T',
+    notes: `跟随系统推荐信号: ${row.tradeSignal.title}`,
+  })
 }
 
 async function handleDeletePosition(symbol) {
@@ -812,5 +940,62 @@ function formatRate(val) {
   align-items: center;
   margin-bottom: 16px;
   margin-top: 8px;
+}
+
+.floating-copilot-btn {
+  position: fixed;
+  right: 24px;
+  bottom: 28px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #409eff 0%, #2b73d2 100%);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 30px;
+  box-shadow: 0 4px 16px rgba(64, 158, 255, 0.4);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  user-select: none;
+}
+
+.floating-copilot-btn:hover {
+  transform: translateY(-3px) scale(1.03);
+  box-shadow: 0 6px 20px rgba(64, 158, 255, 0.55);
+}
+
+.floating-copilot-btn .btn-icon {
+  font-size: 20px;
+}
+
+.floating-copilot-btn .btn-text {
+  font-weight: bold;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+}
+
+.copilot-pulse {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  background: #67c23a;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 6px #67c23a;
+}
+
+.clickable-stock-name {
+  font-weight: 600;
+  color: #303133;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.clickable-stock-name:hover {
+  color: #409eff;
+  text-decoration: underline;
 }
 </style>

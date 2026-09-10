@@ -32,6 +32,9 @@ public class PositionService {
     @Autowired
     private QuoteService quoteService;
 
+    @Autowired
+    private TradeSignalService tradeSignalService;
+
     /**
      * 查询持仓列表 (结合实时行情计算现价、市值、浮动盈亏与预警)
      * @param onlyHolding 是否仅展示当前仍持有的标的 (hold_quantity > 0)
@@ -181,6 +184,9 @@ public class PositionService {
             } else {
                 vo.setTotalPnlRate(BigDecimal.ZERO);
             }
+
+            // 智能交易与做T决策推荐信号
+            vo.setTradeSignal(tradeSignalService.evaluateSignal(p, vo, symbolRecords));
 
             return vo;
         }).collect(Collectors.toList());

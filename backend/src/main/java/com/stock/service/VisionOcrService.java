@@ -691,7 +691,7 @@ public class VisionOcrService {
         return list;
     }
 
-    private String generateErrorDiagnosis(int statusCode, String targetUrl, String protocol) {
+    public String generateErrorDiagnosis(int statusCode, String targetUrl, String protocol) {
         if (statusCode == 400) {
             return "【排查提示】HTTP 400 请求参数错误 (INVALID_ARGUMENT)！\n"
                     + "常见原因：\n"

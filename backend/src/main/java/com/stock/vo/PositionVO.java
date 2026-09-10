@@ -41,4 +41,7 @@ public class PositionVO {
     private BigDecimal dilutedTotalCost;   // 摊薄总成本 (累计买入 - 累计卖出/分红 + 手续费)
     private BigDecimal totalPnl;           // 标的历史累计总盈亏 (市值 - 摊薄总成本 = 浮盈 + 已落袋)
     private BigDecimal totalPnlRate;       // 标的累计总收益率 (%)
+
+    // 投资与做T操作决策推荐信号
+    private TradeSignalVO tradeSignal;
 }

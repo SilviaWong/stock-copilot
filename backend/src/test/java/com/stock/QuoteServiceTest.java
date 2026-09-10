@@ -48,4 +48,49 @@ public class QuoteServiceTest {
             map.forEach((k, v) -> System.out.println("批量行情: " + k + " -> " + v.getName() + " ¥" + v.getCurrentPrice()));
         }
     }
+
+    @Test
+    void testMinuteChart() {
+        com.stock.dto.MinuteChartDTO chart = quoteService.fetchMinuteChart("159242");
+        Assertions.assertNotNull(chart);
+        Assertions.assertEquals("159242", chart.getSymbol());
+        System.out.println("分时图测试: 标的=" + chart.getSymbol() 
+                + ", 名称=" + chart.getName() 
+                + ", 持仓股数=" + chart.getHoldQuantity() 
+                + ", 买入均价=" + chart.getCostPrice() 
+                + ", 摊薄保本价=" + chart.getDilutedCostPrice()
+                + ", 今日打点数=" + (chart.getTradeMarkers() != null ? chart.getTradeMarkers().size() : 0));
+    }
+
+    @Test
+    void testFiveDayChart() {
+        com.stock.dto.FiveDayChartDTO chart = quoteService.fetchFiveDayChart("159242");
+        Assertions.assertNotNull(chart);
+        Assertions.assertEquals("159242", chart.getSymbol());
+        System.out.println("五日图测试: 标的=" + chart.getSymbol()
+                + ", 持仓股数=" + chart.getHoldQuantity()
+                + ", 买入均价=" + chart.getCostPrice()
+                + ", 摊薄保本价=" + chart.getDilutedCostPrice());
+    }
+
+    @Test
+    void testKlineChart() {
+        com.stock.dto.KlineChartDTO chart = quoteService.fetchKlineChart("159242");
+        Assertions.assertNotNull(chart);
+        Assertions.assertEquals("159242", chart.getSymbol());
+        System.out.println("日K线测试: 标的=" + chart.getSymbol()
+                + ", 名称=" + chart.getName()
+                + ", 持仓股数=" + chart.getHoldQuantity()
+                + ", 买入均价=" + chart.getCostPrice()
+                + ", 摊薄保本价=" + chart.getDilutedCostPrice()
+                + ", 历史交易图钉打点总数=" + (chart.getTradeMarkers() != null ? chart.getTradeMarkers().size() : 0));
+        // 验证标的历史打点非空 (数据库中有159242交易流水)
+        if (chart.getHoldQuantity() != null && chart.getHoldQuantity() > 0) {
+            Assertions.assertNotNull(chart.getCostPrice());
+            Assertions.assertNotNull(chart.getDilutedCostPrice());
+            Assertions.assertNotNull(chart.getTradeMarkers());
+            Assertions.assertFalse(chart.getTradeMarkers().isEmpty());
+        }
+    }
 }
+
