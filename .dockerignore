@@ -1,0 +1,31 @@
+# Git & IDE
+.git
+.gitignore
+.idea
+.vscode
+.DS_Store
+
+# 文档与临时说明
+*.md
+doc/
+
+# Node.js 缓存与输出（避免将宿主机架构的 node_modules 拷入 Linux 容器）
+**/node_modules/
+frontend/dist/
+
+# Java 构建输出
+backend/target/
+*.class
+
+# 本地 SQLite 数据库文件 (保护个人隐私，运行时由 schema.sql 自动创建初始化)
+*.db
+*.db-*
+*.sqlite*
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# 日志
+*.log
+backend/logs/

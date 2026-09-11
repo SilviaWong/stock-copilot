@@ -48,6 +48,12 @@ public class DataSourceConfig {
      * 智能定位 stock.db 文件路径
      */
     private File resolveDatabaseFile() {
+        // 0. 支持环境变量指定数据库路径 (例如 Docker / 云原生环境)
+        String customPath = System.getenv("STOCK_DB_PATH");
+        if (customPath != null && !customPath.isBlank()) {
+            return new File(customPath);
+        }
+
         // 1. 如果当前工作目录下已经有 data 目录或 stock.db
         File currentDataDir = new File("data");
         File currentDb = new File(currentDataDir, "stock.db");
