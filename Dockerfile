@@ -1,7 +1,7 @@
 # ==============================================================================
 # 阶段 1: 前端静态资源构建 (Vue 3 + Element Plus + Vite)
 # ==============================================================================
-FROM node:18-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /app/frontend
 
 # 优先安装依赖，利用 Docker 缓存加速后续构建
