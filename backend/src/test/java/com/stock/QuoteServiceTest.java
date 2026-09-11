@@ -92,5 +92,42 @@ public class QuoteServiceTest {
             Assertions.assertFalse(chart.getTradeMarkers().isEmpty());
         }
     }
+
+    @Test
+    void testResolveBenchmark() {
+        QuoteService.BenchmarkInfo cyb = quoteService.resolveBenchmark("159242");
+        Assertions.assertEquals("sz399006", cyb.getSymbol());
+        Assertions.assertEquals("创业板指", cyb.getName());
+
+        QuoteService.BenchmarkInfo kc50 = quoteService.resolveBenchmark("688981");
+        Assertions.assertEquals("sh000688", kc50.getSymbol());
+        Assertions.assertEquals("科创50", kc50.getName());
+
+        QuoteService.BenchmarkInfo sh = quoteService.resolveBenchmark("510300");
+        Assertions.assertEquals("sh000001", sh.getSymbol());
+        Assertions.assertEquals("上证指数", sh.getName());
+
+        QuoteService.BenchmarkInfo sz = quoteService.resolveBenchmark("000001");
+        Assertions.assertEquals("sz399001", sz.getSymbol());
+        Assertions.assertEquals("深证成指", sz.getName());
+    }
+
+    @Test
+    void testMarketOverview() {
+        com.stock.dto.MarketOverviewDTO overview = quoteService.getMarketOverview();
+        Assertions.assertNotNull(overview);
+        Assertions.assertNotNull(overview.getIndices());
+        Assertions.assertFalse(overview.getIndices().isEmpty());
+        Assertions.assertEquals(4, overview.getIndices().size());
+        Assertions.assertNotNull(overview.getTotalTurnover());
+        Assertions.assertNotNull(overview.getSentimentScore());
+        Assertions.assertTrue(overview.getSentimentScore() >= 10 && overview.getSentimentScore() <= 95);
+        Assertions.assertNotNull(overview.getSentimentTitle());
+        System.out.println("大盘全景测试: 指数总数=" + overview.getIndices().size()
+                + ", 两市成交额=¥" + overview.getTotalTurnover() + "亿"
+                + ", 情绪温度=" + overview.getSentimentScore() + "分 (" + overview.getSentimentTitle() + ")"
+                + ", 量能定调=" + overview.getTurnoverStatus());
+    }
 }
+
 

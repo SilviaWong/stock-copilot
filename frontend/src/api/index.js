@@ -194,3 +194,19 @@ export function getKlineChart(symbol) {
     params: { symbol },
   })
 }
+
+/**
+ * AI 次日走势推演 (结合量化指标、Pivot Points 与持仓生命线)
+ */
+export function predictNextDayTrend(payload) {
+  return instance.post('/copilot/predict', payload, { timeout: 60000 })
+}
+
+/**
+ * 获取全市场宏观大盘指数全景与情绪晴雨表
+ */
+export function getMarketOverview() {
+  return instance.get('/quote/market-overview')
+}
+
+

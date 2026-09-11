@@ -44,4 +44,13 @@ public class PositionVO {
 
     // 投资与做T操作决策推荐信号
     private TradeSignalVO tradeSignal;
+
+    // 相对大盘表现与市场共振 (Relative Strength / Alpha)
+    private String benchmarkSymbol;            // 对应基准指数代码 (如 sz399006)
+    private String benchmarkName;              // 对应基准指数名称 (如 创业板指)
+    private BigDecimal benchmarkChangePercent; // 基准指数今日涨跌幅 (%)
+    private BigDecimal relativeStrength;       // 相对强弱 Alpha (个股涨跌 - 基准涨跌)
+    private String relativeStrengthStatus;     // 相对强弱评价 (例如: 🚀 强势领涨 / 🟢 偏强共振 / ⚪ 同步大盘 / 🟡 偏弱滞涨 / 🔴 逆势走弱)
+    private String relativeStrengthLevel;      // 标签色彩等级 (success / primary / info / warning / danger)
 }
+

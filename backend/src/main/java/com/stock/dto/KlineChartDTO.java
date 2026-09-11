@@ -34,4 +34,22 @@ public class KlineChartDTO {
 
     // 标的历史买卖打点图钉 (Buy/Sell Markers)
     private List<TradeMarkerDTO> tradeMarkers;
+
+    // 布林带指标系统 (BOLL: 20, 2)
+    private List<BigDecimal> bollMid;
+    private List<BigDecimal> bollUpper;
+    private List<BigDecimal> bollLower;
+
+    // 平滑异同移动平均线 (MACD: 12, 26, 9)
+    private List<BigDecimal> macdDif;
+    private List<BigDecimal> macdDea;
+    private List<BigDecimal> macdBar;
+
+    // 随机指标 (KDJ: 9, 3, 3)
+    private List<BigDecimal> kdjK;
+    private List<BigDecimal> kdjD;
+    private List<BigDecimal> kdjJ;
+
+    // 次日 Pivot Points 支撑阻力点位网格
+    private PivotPointsDTO pivotPoints;
 }

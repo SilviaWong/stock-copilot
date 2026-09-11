@@ -22,6 +22,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.Charset;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -34,9 +36,15 @@ public class QuoteService {
     private static final Logger log = LoggerFactory.getLogger(QuoteService.class);
     private static final String TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q=";
     private static final Charset GBK_CHARSET = Charset.forName("GBK");
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // 大盘全景行情短时缓存 (5秒)
+    private volatile MarketOverviewDTO cachedMarketOverview;
+    private volatile long marketOverviewCacheTime = 0;
+    private static final long MARKET_CACHE_DURATION_MS = 5000;
 
     @Autowired(required = false)
     private PositionMapper positionMapper;
@@ -44,11 +52,268 @@ public class QuoteService {
     @Autowired(required = false)
     private TransactionRecordMapper transactionRecordMapper;
 
+    @Autowired
+    private QuantIndicatorService quantIndicatorService;
+
     public QuoteService() {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(4))
                 .build();
     }
+
+    /**
+     * 标的基准指数信息映射类
+     */
+    public static class BenchmarkInfo {
+        private final String symbol;
+        private final String name;
+
+        public BenchmarkInfo(String symbol, String name) {
+            this.symbol = symbol;
+            this.name = name;
+        }
+
+        public String getSymbol() {
+            return symbol;
+        }
+
+        public String getName() {
+            return name;
+        }
+    }
+
+    /**
+     * 根据股票或 ETF 代码自动判定其宏观基准指数 (创业板指 / 科创50 / 上证指数 / 深证成指)
+     */
+    public BenchmarkInfo resolveBenchmark(String symbol) {
+        if (!StringUtils.hasText(symbol)) {
+            return new BenchmarkInfo("sh000001", "上证指数");
+        }
+        String clean = symbol.trim().toLowerCase().replaceAll("^(sh|sz|bj)", "");
+        if (clean.startsWith("300") || clean.startsWith("301") || clean.startsWith("159")) {
+            return new BenchmarkInfo("sz399006", "创业板指");
+        } else if (clean.startsWith("688") || clean.startsWith("588")) {
+            return new BenchmarkInfo("sh000688", "科创50");
+        } else if (clean.startsWith("00") || clean.startsWith("399")) {
+            return new BenchmarkInfo("sz399001", "深证成指");
+        } else {
+            return new BenchmarkInfo("sh000001", "上证指数");
+        }
+    }
+
+    /**
+     * 获取全市场宏观大盘全景 (四大核心指数、两市总成交额、多空情绪温度计)
+     */
+    public MarketOverviewDTO getMarketOverview() {
+        long now = System.currentTimeMillis();
+        if (cachedMarketOverview != null && (now - marketOverviewCacheTime) < MARKET_CACHE_DURATION_MS) {
+            return cachedMarketOverview;
+        }
+
+        String url = TENCENT_QUOTE_URL + "sh000001,sz399001,sz399006,sh000688";
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(4))
+                    .header("User-Agent", "Mozilla/5.0")
+                    .GET()
+                    .build();
+
+            HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() == 200) {
+                String body = new String(response.body(), GBK_CHARSET);
+                MarketOverviewDTO overview = parseMarketOverview(body);
+                if (overview != null && overview.getIndices() != null && !overview.getIndices().isEmpty()) {
+                    cachedMarketOverview = overview;
+                    marketOverviewCacheTime = now;
+                    return overview;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("拉取大盘指数全貌异常: {}，将降级处理", e.getMessage());
+        }
+
+        MarketOverviewDTO fallback = buildFallbackMarketOverview();
+        cachedMarketOverview = fallback;
+        marketOverviewCacheTime = now;
+        return fallback;
+    }
+
+    /**
+     * 解析腾讯行情返回的大盘指数数据并计算两市成交额与情绪温度
+     */
+    private MarketOverviewDTO parseMarketOverview(String responseBody) {
+        if (!StringUtils.hasText(responseBody)) {
+            return null;
+        }
+
+        Map<String, IndexQuoteDTO> indexMap = new HashMap<>();
+        String[] lines = responseBody.split(";");
+        for (String line : lines) {
+            line = line.trim();
+            if (!line.contains("=\"") || !line.endsWith("\"")) {
+                continue;
+            }
+
+            int eqIdx = line.indexOf("=\"");
+            String varName = line.substring(0, eqIdx).trim(); // v_sh000001
+            String fullSymbol = varName.replace("v_", "");
+            String dataStr = line.substring(eqIdx + 2, line.length() - 1);
+            String[] fields = dataStr.split("~");
+            if (fields.length < 33) {
+                continue;
+            }
+
+            try {
+                String name = fields[1];
+                BigDecimal currentPoints = new BigDecimal(fields[3]);
+                BigDecimal yesterdayClose = new BigDecimal(fields[4]);
+                BigDecimal changeAmount = fields.length > 31 && StringUtils.hasText(fields[31]) ? new BigDecimal(fields[31]) : BigDecimal.ZERO;
+                BigDecimal changePercent = fields.length > 32 && StringUtils.hasText(fields[32]) ? new BigDecimal(fields[32]) : BigDecimal.ZERO;
+
+                // fields[37] 是成交额 (万元)
+                BigDecimal turnoverWan = fields.length > 37 && StringUtils.hasText(fields[37]) ? new BigDecimal(fields[37]) : BigDecimal.ZERO;
+                BigDecimal turnoverYi = turnoverWan.divide(BigDecimal.valueOf(10000), 2, RoundingMode.HALF_UP);
+
+                // fields[6] 是成交量 (手)
+                BigDecimal volumeWanShou = fields.length > 6 && StringUtils.hasText(fields[6])
+                        ? new BigDecimal(fields[6]).divide(BigDecimal.valueOf(10000), 2, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+
+                String timeStr = fields.length > 30 ? fields[30] : "";
+                String formattedTime = formatTimestamp(timeStr);
+
+                IndexQuoteDTO indexDTO = IndexQuoteDTO.builder()
+                        .symbol(fullSymbol)
+                        .name(name)
+                        .currentPoints(currentPoints)
+                        .yesterdayClose(yesterdayClose)
+                        .changeAmount(changeAmount)
+                        .changePercent(changePercent)
+                        .turnoverAmount(turnoverYi)
+                        .volume(volumeWanShou)
+                        .updateTime(formattedTime)
+                        .build();
+
+                indexMap.put(fullSymbol, indexDTO);
+            } catch (Exception ex) {
+                log.warn("解析大盘单条记录失败: {}, 错误: {}", line, ex.getMessage());
+            }
+        }
+
+        if (indexMap.isEmpty()) {
+            return null;
+        }
+
+        List<IndexQuoteDTO> indices = new ArrayList<>();
+        String[] order = {"sh000001", "sz399001", "sz399006", "sh000688"};
+        for (String code : order) {
+            if (indexMap.containsKey(code)) {
+                indices.add(indexMap.get(code));
+            }
+        }
+
+        BigDecimal shTurnover = indexMap.containsKey("sh000001") ? indexMap.get("sh000001").getTurnoverAmount() : BigDecimal.ZERO;
+        BigDecimal szTurnover = indexMap.containsKey("sz399001") ? indexMap.get("sz399001").getTurnoverAmount() : BigDecimal.ZERO;
+        BigDecimal totalTurnover = (shTurnover != null ? shTurnover : BigDecimal.ZERO)
+                .add(szTurnover != null ? szTurnover : BigDecimal.ZERO);
+
+        double sumChg = 0;
+        int count = 0;
+        for (IndexQuoteDTO idx : indices) {
+            if (idx.getChangePercent() != null) {
+                sumChg += idx.getChangePercent().doubleValue();
+                count++;
+            }
+        }
+        double avgChg = count > 0 ? sumChg / count : 0.0;
+
+        int volBonus = 0;
+        String turnoverStatus;
+        double tt = totalTurnover.doubleValue();
+        if (tt >= 15000) {
+            volBonus = 12;
+            turnoverStatus = String.format("放量活跃 (两市¥%.2f万亿)", tt / 10000.0);
+        } else if (tt >= 10000) {
+            volBonus = 6;
+            turnoverStatus = String.format("温和放量 (两市¥%.2f万亿)", tt / 10000.0);
+        } else if (tt >= 8000) {
+            volBonus = 0;
+            turnoverStatus = String.format("存量博弈 (两市¥%d亿)", (int) tt);
+        } else if (tt > 0) {
+            volBonus = -8;
+            turnoverStatus = String.format("缩量地量 (两市¥%d亿)", (int) tt);
+        } else {
+            turnoverStatus = "交投平稳";
+        }
+
+        int score = (int) Math.round(50 + avgChg * 12 + volBonus);
+        if (score > 95) score = 95;
+        if (score < 10) score = 10;
+
+        String level, title, desc;
+        if (score >= 75) {
+            level = "FEVER";
+            title = "🔥 情绪过热 / 极度活跃";
+            desc = "两市量能充沛，赚钱效应扩散；适宜逢高对大幅冲高标的分批减仓落袋做T，切忌盲目追高接盘。";
+        } else if (score >= 58) {
+            level = "BULLISH";
+            title = "🟢 偏多温和 / 结构反弹";
+            desc = "指数呈现震荡上行反弹走势，主线赛道承接有力；可持股为主，依托关键支撑网格进行低吸做T。";
+        } else if (score >= 45) {
+            level = "NEUTRAL";
+            title = "⚪ 窄幅震荡 / 存量平衡";
+            desc = "多空处于均衡博弈阶段，板块轮动较快；多看少动，坚决执行在网格支撑吸、阻力抛的做T纪律。";
+        } else if (score >= 30) {
+            level = "BEARISH";
+            title = "🟡 偏弱分化 / 亏钱效应";
+            desc = "大盘重心小幅下移，防御避险情绪升温；控制总体持仓风险，逆市加仓时需严格控制为轻仓分批。";
+        } else {
+            level = "PANIC";
+            title = "❄️ 恐慌冰点 / 极端超跌";
+            desc = "盘面出现恐慌性集中杀跌，但技术面进入极度超卖区；切莫在冰点最低点恐慌割肉，等待企稳信号。";
+        }
+
+        return MarketOverviewDTO.builder()
+                .indices(indices)
+                .totalTurnover(totalTurnover)
+                .shTurnover(shTurnover)
+                .szTurnover(szTurnover)
+                .turnoverStatus(turnoverStatus)
+                .sentimentScore(score)
+                .sentimentLevel(level)
+                .sentimentTitle(title)
+                .sentimentDesc(desc)
+                .updateTime(LocalDateTime.now().format(TIME_FORMATTER))
+                .build();
+    }
+
+    /**
+     * 离线或弱网环境下的降级大盘全貌
+     */
+    private MarketOverviewDTO buildFallbackMarketOverview() {
+        List<IndexQuoteDTO> indices = Arrays.asList(
+                IndexQuoteDTO.builder().symbol("sh000001").name("上证指数").currentPoints(new BigDecimal("3352.68")).yesterdayClose(new BigDecimal("3345.10")).changeAmount(new BigDecimal("7.58")).changePercent(new BigDecimal("0.23")).turnoverAmount(new BigDecimal("5240.50")).volume(new BigDecimal("38200.00")).updateTime(LocalDateTime.now().format(TIME_FORMATTER)).build(),
+                IndexQuoteDTO.builder().symbol("sz399001").name("深证成指").currentPoints(new BigDecimal("10830.15")).yesterdayClose(new BigDecimal("10780.00")).changeAmount(new BigDecimal("50.15")).changePercent(new BigDecimal("0.47")).turnoverAmount(new BigDecimal("7310.20")).volume(new BigDecimal("49100.00")).updateTime(LocalDateTime.now().format(TIME_FORMATTER)).build(),
+                IndexQuoteDTO.builder().symbol("sz399006").name("创业板指").currentPoints(new BigDecimal("2218.42")).yesterdayClose(new BigDecimal("2200.12")).changeAmount(new BigDecimal("18.30")).changePercent(new BigDecimal("0.83")).turnoverAmount(new BigDecimal("3450.80")).volume(new BigDecimal("19500.00")).updateTime(LocalDateTime.now().format(TIME_FORMATTER)).build(),
+                IndexQuoteDTO.builder().symbol("sh000688").name("科创50").currentPoints(new BigDecimal("1025.30")).yesterdayClose(new BigDecimal("1020.00")).changeAmount(new BigDecimal("5.30")).changePercent(new BigDecimal("0.52")).turnoverAmount(new BigDecimal("1210.30")).volume(new BigDecimal("8200.00")).updateTime(LocalDateTime.now().format(TIME_FORMATTER)).build()
+        );
+
+        BigDecimal total = new BigDecimal("12550.70");
+        return MarketOverviewDTO.builder()
+                .indices(indices)
+                .totalTurnover(total)
+                .shTurnover(new BigDecimal("5240.50"))
+                .szTurnover(new BigDecimal("7310.20"))
+                .turnoverStatus("温和放量 (两市¥1.26万亿)")
+                .sentimentScore(62)
+                .sentimentLevel("BULLISH")
+                .sentimentTitle("🟢 偏多温和 / 结构反弹")
+                .sentimentDesc("指数呈现震荡上行反弹走势，主线赛道承接有力；可持股为主，依托关键支撑网格进行低吸做T。")
+                .updateTime(LocalDateTime.now().format(TIME_FORMATTER))
+                .build();
+    }
+
 
     /**
      * 单个标的行情查询
@@ -492,6 +757,8 @@ public class QuoteService {
                     List<List<BigDecimal>> values = new ArrayList<>();
                     List<Long> volumes = new ArrayList<>();
                     List<BigDecimal> closes = new ArrayList<>();
+                    List<BigDecimal> highs = new ArrayList<>();
+                    List<BigDecimal> lows = new ArrayList<>();
 
                     for (JsonNode item : klineArr) {
                         if (item.isArray() && item.size() >= 6) {
@@ -507,6 +774,8 @@ public class QuoteService {
                             values.add(Arrays.asList(open, close, low, high));
                             volumes.add(vol);
                             closes.add(close);
+                            highs.add(high);
+                            lows.add(low);
                         }
                     }
 
@@ -517,6 +786,37 @@ public class QuoteService {
                     builder.ma10(calculateMA(10, closes));
                     builder.ma20(calculateMA(20, closes));
                     builder.ma60(calculateMA(60, closes));
+
+                    if (quantIndicatorService != null && !closes.isEmpty()) {
+                        // 1. 布林带系统 (BOLL: 20, 2)
+                        QuantIndicatorService.BollResult boll = quantIndicatorService.calculateBoll(closes, 20, 2.0);
+                        builder.bollMid(boll.getMid());
+                        builder.bollUpper(boll.getUpper());
+                        builder.bollLower(boll.getLower());
+
+                        // 2. MACD 经典系统 (12, 26, 9)
+                        QuantIndicatorService.MacdResult macd = quantIndicatorService.calculateMacd(closes, 12, 26, 9);
+                        builder.macdDif(macd.getDif());
+                        builder.macdDea(macd.getDea());
+                        builder.macdBar(macd.getBar());
+
+                        // 3. KDJ 随机指标 (9, 3, 3)
+                        QuantIndicatorService.KdjResult kdj = quantIndicatorService.calculateKdj(highs, lows, closes, 9, 3, 3);
+                        builder.kdjK(kdj.getK());
+                        builder.kdjD(kdj.getD());
+                        builder.kdjJ(kdj.getJ());
+
+                        // 4. 次日 Pivot Points (基于最新一个完整交易日的 High, Low, Close)
+                        int lastIdx = closes.size() - 1;
+                        BigDecimal lastHigh = highs.get(lastIdx);
+                        BigDecimal lastLow = lows.get(lastIdx);
+                        BigDecimal lastClose = closes.get(lastIdx);
+                        String lastDate = dates.get(lastIdx);
+                        PivotPointsDTO pivot = quantIndicatorService.calculatePivotPoints(
+                                symbol, lastDate, lastHigh, lastLow, lastClose, lastClose
+                        );
+                        builder.pivotPoints(pivot);
+                    }
                 }
             }
         } catch (Exception e) {

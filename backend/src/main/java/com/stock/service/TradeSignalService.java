@@ -1,5 +1,6 @@
 package com.stock.service;
 
+import com.stock.dto.MarketOverviewDTO;
 import com.stock.entity.Position;
 import com.stock.entity.TransactionRecord;
 import com.stock.vo.PositionVO;
@@ -13,20 +14,29 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 股票与 ETF 智能交易信号推荐服务 (持仓买卖节奏与网格做 T 指导引擎)
+ * 股票与 ETF 智能交易信号推荐服务 (持仓买卖节奏与网格做 T 指导引擎，融合大盘风控过滤器)
  */
 @Service
 public class TradeSignalService {
 
     /**
-     * 为指定持仓计算实时操作推荐信号
-     *
-     * @param position 原始持仓实体
-     * @param vo       丰富后的持仓展示对象 (含实时现价、涨跌幅、摊薄成本)
-     * @param records  该标的历史交易流水 (用于定位近期买入与做 T 点位)
-     * @return 智能决策信号
+     * 兼容接口：无大盘上下文的旧版调用
      */
     public TradeSignalVO evaluateSignal(Position position, PositionVO vo, List<TransactionRecord> records) {
+        return evaluateSignal(position, vo, records, null);
+    }
+
+    /**
+     * 为指定持仓计算实时操作推荐信号 (引入大盘多空环境与相对强弱风控过滤器)
+     *
+     * @param position       原始持仓实体
+     * @param vo             丰富后的持仓展示对象 (含实时现价、涨跌幅、摊薄成本、相对大盘强弱)
+     * @param records        该标的历史交易流水 (用于定位近期买入与做 T 点位)
+     * @param marketOverview 全市场宏观大盘指数与情绪晴雨表
+     * @return 智能决策信号
+     */
+    public TradeSignalVO evaluateSignal(Position position, PositionVO vo, List<TransactionRecord> records, MarketOverviewDTO marketOverview) {
+
         int holdQuantity = position.getHoldQuantity() != null ? position.getHoldQuantity() : 0;
         BigDecimal costPrice = position.getCostPrice() != null ? position.getCostPrice() : BigDecimal.ZERO;
         BigDecimal totalCost = position.getTotalCost() != null ? position.getTotalCost() : BigDecimal.ZERO;
@@ -111,7 +121,11 @@ public class TradeSignalService {
         double pnlRate = vo.getFloatingPnlRate() != null ? vo.getFloatingPnlRate().doubleValue() : 0.0;
         int defaultQty = calculateSuggestedQty(holdQuantity);
 
-        // 5. 规则决策引擎判断
+        // 5. 规则决策引擎判断 (融合大盘多空环境与相对强弱风控过滤器)
+        boolean isMarketWeak = (vo.getBenchmarkChangePercent() != null && vo.getBenchmarkChangePercent().doubleValue() <= -1.5)
+                || (marketOverview != null && "PANIC".equalsIgnoreCase(marketOverview.getSentimentLevel()));
+        boolean isMarketSurging = marketOverview != null && "FEVER".equalsIgnoreCase(marketOverview.getSentimentLevel());
+        boolean isStockOutperforming = vo.getRelativeStrength() != null && vo.getRelativeStrength().doubleValue() >= 1.5;
 
         // 5.1 【建议减仓做 T / 止盈锁定】
         // 条件：相比上次买点反弹 >= 4.0%，或者持仓累计浮盈 >= 6.0% 且涨势放缓
@@ -124,11 +138,21 @@ public class TradeSignalService {
                     ? String.format("较前次买入已反弹达标 (+%.1f%%)", reboundFromLastBuy)
                     : String.format("累计持仓浮盈丰厚 (+%.1f%%)", pnlRate);
 
+            String title = "🔴 建议减仓做T";
+            String extraTip = "";
+            if (isStockOutperforming && vo.getBenchmarkChangePercent() != null && vo.getBenchmarkChangePercent().doubleValue() < 0) {
+                title = "🔴 逆势走强做T";
+                extraTip = String.format(" [主力逆势拉升: 跑赢大盘 +%s%%，谨防尾盘受大盘拖累冲高回落，高抛落袋胜率极佳]", vo.getRelativeStrength());
+            } else if (isMarketSurging) {
+                title = "🔴 顺风减仓做T";
+                extraTip = " [全市场交投过热，主力资金加速换手，适宜分批止盈兑现]";
+            }
+
             return TradeSignalVO.builder()
                     .signalType("SELL")
-                    .title("🔴 建议减仓做T")
-                    .description(String.format("%s，触及高抛止盈区间。建议在 ¥%.3f 附近卖出 %d 股锁定波段利润，预计落袋收益 ¥%.2f。",
-                            reason, currentPrice, defaultQty, estProfit))
+                    .title(title)
+                    .description(String.format("%s，触及高抛止盈区间%s。建议在 ¥%.3f 附近卖出 %d 股锁定波段利润，预计落袋收益 ¥%.2f。",
+                            reason, extraTip, currentPrice, defaultQty, estProfit))
                     .suggestedPrice(currentPrice)
                     .suggestedQuantity(defaultQty)
                     .estimatedProfit(estProfit)
@@ -139,9 +163,23 @@ public class TradeSignalService {
         // 5.2 【建议逢低加仓 / 摊薄做 T】
         // 条件：较前次买点回撤 <= -3.0%，或累计浮亏 <= -3.5%，或日内急跌超 2%
         if (reboundFromLastBuy <= -3.0 || pnlRate <= -3.5 || changePercent.doubleValue() <= -2.0) {
-            BigDecimal buyAmount = currentPrice.multiply(BigDecimal.valueOf(defaultQty));
+            int actualBuyQty = defaultQty;
+            String title = "🟢 建议逢低加仓";
+            String marketAlert = "";
+
+            if (isMarketWeak) {
+                // 大盘破位重挫时，启动防踩踏过滤器，减半建议买入股数
+                actualBuyQty = Math.max(100, (defaultQty / 200) * 100);
+                title = "🟢 逆势分批低吸";
+                marketAlert = String.format(" ⚠️【大盘逆风风控提示】：当前基准大盘 (%s %s%%) 明显走弱，此买点属左侧逆风博弈，已自动将加仓手数调减为 %d 股以控制下行敞口，严禁单笔重仓追击。",
+                        vo.getBenchmarkName() != null ? vo.getBenchmarkName() : "大盘",
+                        vo.getBenchmarkChangePercent() != null ? vo.getBenchmarkChangePercent() : "0.00",
+                        actualBuyQty);
+            }
+
+            BigDecimal buyAmount = currentPrice.multiply(BigDecimal.valueOf(actualBuyQty));
             BigDecimal newTotalCost = totalCost.add(buyAmount);
-            BigDecimal newCostPrice = newTotalCost.divide(BigDecimal.valueOf(holdQuantity + defaultQty), 4, RoundingMode.HALF_UP);
+            BigDecimal newCostPrice = newTotalCost.divide(BigDecimal.valueOf(holdQuantity + actualBuyQty), 4, RoundingMode.HALF_UP);
 
             String reason = reboundFromLastBuy <= -3.0
                     ? String.format("较前次买点已回调 %.1f%%", Math.abs(reboundFromLastBuy))
@@ -149,11 +187,11 @@ public class TradeSignalService {
 
             return TradeSignalVO.builder()
                     .signalType("BUY")
-                    .title("🟢 建议逢低加仓")
-                    .description(String.format("%s，触及网格低吸区间。建议在 ¥%.3f 附近加仓 %d 股，加仓后持仓均价预计降至 ¥%.4f。",
-                            reason, currentPrice, defaultQty, newCostPrice))
+                    .title(title)
+                    .description(String.format("%s，触及网格低吸区间。建议在 ¥%.3f 附近加仓 %d 股，加仓后持仓均价预计降至 ¥%.4f。%s",
+                            reason, currentPrice, actualBuyQty, newCostPrice, marketAlert))
                     .suggestedPrice(currentPrice)
-                    .suggestedQuantity(defaultQty)
+                    .suggestedQuantity(actualBuyQty)
                     .estimatedNewCost(newCostPrice)
                     .level("success")
                     .build();
@@ -163,15 +201,28 @@ public class TradeSignalService {
         BigDecimal nextBuyTrigger = currentPrice.multiply(BigDecimal.valueOf(0.97)).setScale(3, RoundingMode.HALF_UP);
         BigDecimal nextSellTrigger = currentPrice.multiply(BigDecimal.valueOf(1.04)).setScale(3, RoundingMode.HALF_UP);
 
+        String holdTitle = "⚪ 持股观望";
+        String rsRemark = "";
+        if (vo.getRelativeStrength() != null) {
+            if (vo.getRelativeStrength().doubleValue() >= 1.0) {
+                holdTitle = "⚪ 偏强持股观望";
+                rsRemark = String.format(" (今日表现强于大盘 %s，主力护盘韧性良好)", vo.getBenchmarkName() != null ? vo.getBenchmarkName() : "大盘");
+            } else if (vo.getRelativeStrength().doubleValue() <= -1.0) {
+                holdTitle = "⚪ 偏弱持股防守";
+                rsRemark = String.format(" (今日走势跑输大盘 %s，上方抛压较重，耐心等待企稳)", vo.getBenchmarkName() != null ? vo.getBenchmarkName() : "大盘");
+            }
+        }
+
         return TradeSignalVO.builder()
                 .signalType("HOLD")
-                .title("⚪ 持股观望")
-                .description(String.format("价格处于成本安全垫区间内正常波动，无需频繁操作。建议耐心持股，下档加仓位约 ¥%.3f (-3%%)，上档减仓位约 ¥%.3f (+4%%)。",
-                        nextBuyTrigger, nextSellTrigger))
+                .title(holdTitle)
+                .description(String.format("价格处于成本安全垫区间内正常波动%s，无需频繁操作。建议耐心持股，下档加仓位约 ¥%.3f (-3%%)，上档减仓位约 ¥%.3f (+4%%)。",
+                        rsRemark, nextBuyTrigger, nextSellTrigger))
                 .suggestedPrice(nextBuyTrigger)
                 .suggestedQuantity(defaultQty)
                 .level("info")
                 .build();
+
     }
 
     /**

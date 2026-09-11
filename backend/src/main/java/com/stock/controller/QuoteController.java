@@ -3,6 +3,7 @@ package com.stock.controller;
 import com.stock.common.Result;
 import com.stock.dto.FiveDayChartDTO;
 import com.stock.dto.KlineChartDTO;
+import com.stock.dto.MarketOverviewDTO;
 import com.stock.dto.MinuteChartDTO;
 import com.stock.dto.QuoteDTO;
 import com.stock.service.QuoteService;
@@ -18,10 +19,20 @@ public class QuoteController {
     private QuoteService quoteService;
 
     /**
+     * 获取全市场宏观大盘指数全景与情绪晴雨表
+     */
+    @GetMapping("/market-overview")
+    public Result<MarketOverviewDTO> getMarketOverview() {
+        MarketOverviewDTO overview = quoteService.getMarketOverview();
+        return Result.success(overview);
+    }
+
+    /**
      * 获取单个标的的实时行情
      */
     @GetMapping("/detail")
     public Result<QuoteDTO> getQuoteDetail(@RequestParam("symbol") String symbol) {
+
         QuoteDTO quote = quoteService.fetchQuote(symbol);
         return Result.success(quote);
     }

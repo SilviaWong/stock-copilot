@@ -51,8 +51,58 @@
       </div>
     </header>
 
+    <!-- 全市场宏观大盘晴雨表与量能情绪雷达 -->
+    <div v-if="marketOverview && marketOverview.indices && marketOverview.indices.length" class="market-overview-banner">
+      <div class="market-banner-left">
+        <div class="market-tag-title">
+          <span class="pulse-dot"></span>
+          <b>全市场大势</b>
+        </div>
+        <div class="indices-list">
+          <div
+            v-for="idx in marketOverview.indices"
+            :key="idx.symbol"
+            class="index-pill"
+            :class="idx.changePercent >= 0 ? 'pill-up' : 'pill-down'"
+          >
+            <span class="idx-name">{{ idx.name }}</span>
+            <span class="idx-points num-font">{{ Number(idx.currentPoints).toFixed(2) }}</span>
+            <span class="idx-chg num-font">
+              {{ idx.changePercent >= 0 ? '+' : '' }}{{ Number(idx.changePercent).toFixed(2) }}%
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="market-banner-right">
+        <!-- 两市总成交额 -->
+        <div class="market-metric">
+          <span class="metric-label">两市成交额:</span>
+          <span class="metric-val num-font">¥{{ (Number(marketOverview.totalTurnover) / 10000).toFixed(2) }}万亿</span>
+          <el-tag size="small" type="info" effect="plain" class="metric-tag">
+            {{ marketOverview.turnoverStatus }}
+          </el-tag>
+        </div>
+
+        <!-- 市场多空情绪温度计 -->
+        <div class="market-metric sentiment-box">
+          <span class="metric-label">情绪温度:</span>
+          <span class="sentiment-score num-font" :style="{ color: getSentimentColor(marketOverview.sentimentScore) }">
+            {{ marketOverview.sentimentScore }}°
+          </span>
+          <el-tag size="small" :type="getSentimentTagType(marketOverview.sentimentLevel)" effect="dark" class="sentiment-badge">
+            {{ marketOverview.sentimentTitle }}
+          </el-tag>
+          <el-tooltip :content="marketOverview.sentimentDesc" placement="bottom" effect="light">
+            <el-icon class="sentiment-tip-icon"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </div>
+      </div>
+    </div>
+
     <!-- 账户资产统计看板卡片 (实时市值与浮盈) -->
     <div class="summary-cards">
+
       <el-card class="stat-card" shadow="hover">
         <div class="stat-label">当前持仓总市值</div>
         <div class="stat-value num-font" style="color: #303133;">
@@ -110,6 +160,158 @@
       </el-card>
     </div>
 
+    <!-- 🎯 今日操盘行动看板 (极简行动指引 & 躺平待机看板) -->
+    <div class="today-action-card">
+      <div class="action-card-header">
+        <div class="action-card-title-group">
+          <div class="action-card-title">
+            <span class="action-title-icon">🎯</span>
+            <span class="action-title-text">今日操盘行动建议</span>
+            <el-tag
+              :type="actionablePositions.length > 0 ? 'danger' : 'success'"
+              effect="dark"
+              size="small"
+              class="action-badge"
+            >
+              {{ actionablePositions.length > 0 ? `${actionablePositions.length} 支标的触发调仓建议` : '持仓标的处于平稳期 · 建议安心待机' }}
+            </el-tag>
+          </div>
+          <div class="action-card-subtitle">
+            系统已融合次日 Pivot 支撑阻力位、网格做T点位、止盈止损线及全市场情绪量能完成智能测算
+          </div>
+        </div>
+      </div>
+
+      <!-- 待办场景：有触发调仓建议的标的 -->
+      <div v-if="actionablePositions.length > 0" class="action-items-grid">
+        <div
+          v-for="item in actionablePositions"
+          :key="item.symbol"
+          class="action-item-card"
+          :class="'action-card-' + (item.tradeSignal?.signalType?.toLowerCase() || 'default')"
+        >
+          <div class="action-item-top">
+            <div class="action-item-stock">
+              <span class="stock-name" @click="openChartDialog(item)" title="点击查看走势图与复盘">{{ item.name }}</span>
+              <span class="stock-symbol num-font">{{ item.symbol }}</span>
+              <el-tag :type="item.market === 'SH' ? 'danger' : 'primary'" size="small" effect="plain">{{ item.market }}</el-tag>
+            </div>
+            <el-tag
+              :type="item.tradeSignal.level || (item.tradeSignal.signalType === 'BUY' ? 'success' : 'danger')"
+              effect="dark"
+              class="action-signal-tag"
+            >
+              {{ item.tradeSignal.title }}
+            </el-tag>
+          </div>
+
+          <div class="action-item-desc">
+            {{ item.tradeSignal.description }}
+          </div>
+
+          <div class="action-item-metrics">
+            <div class="metric-block">
+              <div class="m-label">建议执行动作</div>
+              <div class="m-val" :class="item.tradeSignal.signalType === 'BUY' ? 'up-color' : 'down-color'" style="font-weight: 800;">
+                {{ item.tradeSignal.signalType === 'BUY' ? '🟢 挂单低吸' : item.tradeSignal.signalType === 'SELL' ? '🔴 挂单高抛' : '⚠️ 关注风险' }}
+              </div>
+            </div>
+            <div class="metric-block">
+              <div class="m-label">建议参考价位</div>
+              <div class="m-val num-font">
+                ¥ {{ (item.tradeSignal.suggestedPrice || item.currentPrice || item.costPrice) ? Number(item.tradeSignal.suggestedPrice || item.currentPrice || item.costPrice).toFixed(3) : '市价' }}
+              </div>
+            </div>
+            <div class="metric-block">
+              <div class="m-label">建议执行手数</div>
+              <div class="m-val num-font">
+                {{ item.tradeSignal.suggestedQuantity || 1000 }} 股
+              </div>
+            </div>
+            <div class="metric-block">
+              <div class="m-label">实时现价</div>
+              <div class="m-val num-font" style="color: #606266;">
+                ¥ {{ Number(item.currentPrice).toFixed(3) }}
+              </div>
+            </div>
+          </div>
+
+          <div class="action-item-actions">
+            <el-button
+              v-if="item.tradeSignal.signalType === 'BUY'"
+              type="success"
+              size="default"
+              class="btn-execute"
+              @click="applySignalToTrade(item, 'BUY')"
+            >
+              ⚡ 一键低吸买入 (自动预填)
+            </el-button>
+            <el-button
+              v-else-if="item.tradeSignal.signalType === 'SELL'"
+              type="warning"
+              size="default"
+              class="btn-execute"
+              @click="applySignalToTrade(item, 'SELL')"
+            >
+              ⚡ 一键高抛卖出 (自动预填)
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              plain
+              size="default"
+              class="btn-execute"
+              @click="openAddTradeWithValues({ symbol: item.symbol, name: item.name, price: item.currentPrice, quantity: item.holdQuantity })"
+            >
+              去处理调仓
+            </el-button>
+
+            <div class="action-extra-links">
+              <el-button link type="primary" size="small" @click="askCopilotForSymbol(item)">
+                问AI副驾 🤖
+              </el-button>
+              <el-button link type="info" size="small" @click="openChartDialog(item)">
+                走势与指标 📈
+              </el-button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 躺平场景：无买卖信号触发，全市场/标的安稳观望 -->
+      <div v-else class="zen-relax-banner">
+        <div class="zen-left">
+          <span class="zen-tea-emoji">☕</span>
+          <div class="zen-text-content">
+            <div class="zen-headline">
+              {{ quietPositions.length > 0 ? '持仓标的均在健康区间波动，今日无需频繁操作，安心享受时间复利' : '暂无在持标的，系统已就绪，随时可建档或记账' }}
+            </div>
+            <div class="zen-quote">
+              “会买的是徒弟，会卖的是师傅，会空仓和等待的是祖师爷。” 系统正实时盯盘，一旦触及网格挂单点位或止盈止损线，闹钟将第一时间在此提醒。
+            </div>
+          </div>
+        </div>
+        <div v-if="quietPositions.length > 0" class="zen-right">
+          <div class="zen-monitor-title">实时盯盘中 ({{ quietPositions.length }} 支持仓):</div>
+          <div class="zen-tag-list">
+            <span
+              v-for="qp in quietPositions"
+              :key="qp.symbol"
+              class="zen-stock-pill"
+              @click="openChartDialog(qp)"
+              title="点击查看分时与日K走势图"
+            >
+              <span class="pill-name">{{ qp.name }}</span>
+              <span class="pill-price num-font">¥{{ Number(qp.currentPrice).toFixed(3) }}</span>
+              <span class="pill-chg num-font" :class="qp.changePercent >= 0 ? 'up-color' : 'down-color'">
+                {{ qp.changePercent >= 0 ? '+' : '' }}{{ Number(qp.changePercent).toFixed(2) }}%
+              </span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 主体区域：Tab 分组 -->
     <el-card class="main-content-card" shadow="never">
       <el-tabs v-model="activeTab" class="custom-tabs">
@@ -117,12 +319,20 @@
         <el-tab-pane label="📊 当前持仓看板" name="positions">
           <div class="table-toolbar">
             <div class="toolbar-left">
+              <!-- 视图模式切换 -->
+              <el-radio-group v-model="viewMode" size="small" @change="saveViewMode" style="margin-right: 16px;">
+                <el-radio-button label="simple">💡 极简小白模式</el-radio-button>
+                <el-radio-button label="pro">📊 专业投研模式</el-radio-button>
+              </el-radio-group>
               <el-switch
                 v-model="onlyHolding"
                 active-text="仅显示当前持仓"
                 inactive-text="显示全部历史标的"
                 @change="loadPositions"
               />
+              <span v-if="viewMode === 'simple'" style="font-size: 12px; color: #909399; margin-left: 12px;">
+                （已隐藏复杂的量化摊薄与Alpha参数，直观展示今日指引与收益）
+              </span>
             </div>
             <div class="toolbar-right">
               <span v-if="lastUpdateTime" style="font-size: 12px; color: #909399; margin-right: 12px;">
@@ -177,8 +387,28 @@
                     ⚠️ 跌破止损线
                   </el-tag>
                 </div>
+                <!-- 相对大盘表现与共振标签 (Relative Strength) - 专业投研模式展示 -->
+                <div v-if="viewMode === 'pro' && row.relativeStrengthStatus && row.holdQuantity > 0" style="margin-top: 3px;">
+                  <el-tooltip
+                    :content="'归属大盘基准: ' + (row.benchmarkName || '大盘') + ' (' + (row.benchmarkChangePercent >= 0 ? '+' : '') + (row.benchmarkChangePercent || 0) + '%)，相对强弱超额收益 (Alpha): ' + (row.relativeStrength > 0 ? '+' : '') + (row.relativeStrength || 0) + '%'"
+                    placement="top"
+                  >
+                    <el-tag
+                      size="small"
+                      :type="row.relativeStrengthLevel || 'info'"
+                      effect="plain"
+                      class="rs-badge"
+                    >
+                      {{ row.relativeStrengthStatus }}
+                      <span v-if="row.relativeStrength !== undefined && row.relativeStrength !== null">
+                        {{ Number(row.relativeStrength) > 0 ? '+' : '' }}{{ Number(row.relativeStrength).toFixed(2) }}%
+                      </span>
+                    </el-tag>
+                  </el-tooltip>
+                </div>
               </template>
             </el-table-column>
+
 
             <!-- 实时现价 & 今日涨跌 -->
             <el-table-column label="实时现价" width="130" align="right">
@@ -190,6 +420,30 @@
                   <span :class="row.changePercent >= 0 ? 'up-color' : 'down-color'">
                     {{ row.changePercent >= 0 ? '+' : '' }}{{ Number(row.changePercent).toFixed(2) }}%
                   </span>
+                </div>
+              </template>
+            </el-table-column>
+
+            <!-- 极简模式专享：我的持仓与盈亏 (合并持仓数、累计总盈亏、保本单价、市值) -->
+            <el-table-column v-if="viewMode === 'simple'" label="我的持仓与盈亏" min-width="250">
+              <template #default="{ row }">
+                <div v-if="row.holdQuantity > 0">
+                  <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px;">
+                    <span style="font-size: 14px; font-weight: bold; color: #303133; white-space: nowrap;">
+                      {{ row.holdQuantity }} <span style="font-size: 12px; font-weight: normal; color: #909399;">股</span>
+                    </span>
+                    <span class="num-font" :class="getAmountColorClass(row.totalPnl)" style="font-size: 15px; font-weight: bold; white-space: nowrap;">
+                      {{ formatPnl(row.totalPnl) }}
+                      <span style="font-size: 12px; font-weight: normal;">({{ formatRate(row.totalPnlRate) }})</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; font-size: 12px; color: #909399; margin-top: 4px; gap: 8px;">
+                    <span style="white-space: nowrap;">市值: ¥{{ Number(row.marketValue).toFixed(2) }}</span>
+                    <span style="white-space: nowrap;">保本价: ¥{{ (row.dilutedCostPrice !== undefined && row.dilutedCostPrice !== null ? Number(row.dilutedCostPrice) : Number(row.costPrice)).toFixed(3) }}</span>
+                  </div>
+                </div>
+                <div v-else style="color: #909399; font-size: 12px;">
+                  已清仓 (历史净盈亏: <b :class="getAmountColorClass(row.totalPnl)">{{ formatPnl(row.totalPnl) }}</b>)
                 </div>
               </template>
             </el-table-column>
@@ -244,8 +498,8 @@
               </template>
             </el-table-column>
 
-            <!-- 买入均价 -->
-            <el-table-column prop="costPrice" width="125" align="right">
+            <!-- 买入均价 (专业投研模式) -->
+            <el-table-column v-if="viewMode === 'pro'" prop="costPrice" width="125" align="right">
               <template #header>
                 <span>买入均价</span>
                 <el-tooltip content="当前持仓筹码的实际加权平均买入成本（不掺杂已落袋做T利润）" placement="top">
@@ -259,8 +513,8 @@
               </template>
             </el-table-column>
 
-            <!-- 摊薄成本价 (券商保本价) -->
-            <el-table-column prop="dilutedCostPrice" width="140" align="right">
+            <!-- 摊薄成本价 (券商保本价) (专业投研模式) -->
+            <el-table-column v-if="viewMode === 'pro'" prop="dilutedCostPrice" width="140" align="right">
               <template #header>
                 <span style="color: #e6a23c; font-weight: bold;">摊薄成本(券商)</span>
                 <el-tooltip content="扣除历史做T已落袋利润后的保本成本单价，与券商App成本价口径完全一致" placement="top">
@@ -278,7 +532,7 @@
               </template>
             </el-table-column>
 
-            <el-table-column prop="holdQuantity" label="持仓数量" width="110" align="right">
+            <el-table-column v-if="viewMode === 'pro'" prop="holdQuantity" label="持仓数量" width="110" align="right">
               <template #default="{ row }">
                 <span class="num-font" :style="{ color: row.holdQuantity > 0 ? '#303133' : '#909399', fontWeight: 'bold' }">
                   {{ row.holdQuantity }}
@@ -287,8 +541,8 @@
               </template>
             </el-table-column>
 
-            <!-- 持仓市值 -->
-            <el-table-column label="当前市值" width="125" align="right">
+            <!-- 持仓市值 (专业投研模式) -->
+            <el-table-column v-if="viewMode === 'pro'" label="当前市值" width="125" align="right">
               <template #default="{ row }">
                 <span class="num-font" style="font-weight: 600;">
                   ¥ {{ Number(row.marketValue).toFixed(2) }}
@@ -296,8 +550,8 @@
               </template>
             </el-table-column>
 
-            <!-- 实时持仓浮动盈亏 -->
-            <el-table-column label="持仓浮盈(率)" width="135" align="right">
+            <!-- 实时持仓浮动盈亏 (专业投研模式) -->
+            <el-table-column v-if="viewMode === 'pro'" label="持仓浮盈(率)" width="135" align="right">
               <template #header>
                 <span>持仓浮盈(率)</span>
                 <el-tooltip content="仅计算当前仍持有的筹码相比买入均价的未实现浮动盈亏" placement="top">
@@ -317,8 +571,8 @@
               </template>
             </el-table-column>
 
-            <!-- 标的累计总盈亏 (含做T落袋，与券商App大红字一致) -->
-            <el-table-column label="累计总盈亏(券商)" width="150" align="right">
+            <!-- 标的累计总盈亏 (含做T落袋，与券商App大红字一致) (专业投研模式) -->
+            <el-table-column v-if="viewMode === 'pro'" label="累计总盈亏(券商)" width="150" align="right">
               <template #header>
                 <span style="color: #e6a23c; font-weight: bold;">累计总盈亏(券商)</span>
                 <el-tooltip content="标的当前市值 - 摊薄总成本（包含历史做T已落袋盈利+持仓浮盈），与券商App显示的标的总盈亏完全一致" placement="top">
@@ -335,13 +589,13 @@
               </template>
             </el-table-column>
 
-            <el-table-column prop="totalCost" label="投入成本" width="120" align="right">
+            <el-table-column v-if="viewMode === 'pro'" prop="totalCost" label="投入成本" width="120" align="right">
               <template #default="{ row }">
                 <span class="num-font" style="color: #606266;">¥ {{ Number(row.totalCost).toFixed(2) }}</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="目标止盈/止损" width="140">
+            <el-table-column v-if="viewMode === 'pro'" label="目标止盈/止损" width="140">
               <template #default="{ row }">
                 <div v-if="row.targetTakeProfit || row.targetStopLoss" style="font-size: 12px; line-height: 1.5;">
                   <div v-if="row.targetTakeProfit" style="color: #f56c6c;">
@@ -357,7 +611,7 @@
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="380" fixed="right">
+            <el-table-column label="操作" :width="viewMode === 'simple' ? 320 : 380" fixed="right">
               <template #default="{ row }">
                 <el-button type="success" plain size="small" :icon="TrendCharts" @click="openChartDialog(row)">
                   走势图
@@ -375,6 +629,7 @@
                   减仓
                 </el-button>
                 <el-button
+                  v-if="viewMode === 'pro'"
                   link
                   type="success"
                   size="small"
@@ -548,6 +803,7 @@
       v-model="chartDialogVisible"
       :symbol="currentChartSymbol"
       :name="currentChartName"
+      :benchmark="currentChartBenchmark"
     />
 
     <!-- 悬浮触发按钮：随叫随到的 AI 投资副驾 -->
@@ -560,10 +816,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { Plus, Refresh, Search, DocumentAdd, Delete, Camera, QuestionFilled, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { getAccountSummary, getPositionList, getTradeHistory, deleteTrade, deletePosition, resetAllData } from './api'
+import { getAccountSummary, getPositionList, getTradeHistory, deleteTrade, deletePosition, resetAllData, getMarketOverview } from './api'
 import AddTradeDialog from './components/AddTradeDialog.vue'
 import InitPositionDialog from './components/InitPositionDialog.vue'
 import EditTradeDialog from './components/EditTradeDialog.vue'
@@ -580,9 +836,34 @@ const autoRefresh = ref(false)
 const refreshing = ref(false)
 const lastUpdateTime = ref('')
 
+// 视图模式：极简小白模式 (simple) vs 专业投研模式 (pro)
+const viewMode = ref(localStorage.getItem('stock_copilot_view_mode') || 'simple')
+
+function saveViewMode(val) {
+  localStorage.setItem('stock_copilot_view_mode', val)
+}
+
 const summary = ref({})
 const positions = ref([])
 const historyList = ref([])
+const marketOverview = ref(null)
+
+// 今日操盘待办标的 (有买入/卖出/风险预警等明确动作建议的在持标的)
+const actionablePositions = computed(() => {
+  return positions.value.filter(p =>
+    p.holdQuantity > 0 &&
+    p.tradeSignal &&
+    (p.tradeSignal.signalType === 'BUY' || p.tradeSignal.signalType === 'SELL' || p.tradeSignal.signalType === 'ALERT')
+  )
+})
+
+// 安心持股/待机标的 (处于持股观望或无紧急操作的在持标的)
+const quietPositions = computed(() => {
+  return positions.value.filter(p =>
+    p.holdQuantity > 0 &&
+    (!p.tradeSignal || p.tradeSignal.signalType === 'HOLD')
+  )
+})
 
 const loadingPositions = ref(false)
 const loadingHistory = ref(false)
@@ -598,13 +879,43 @@ const targetDialogRef = ref(null)
 const chartDialogVisible = ref(false)
 const currentChartSymbol = ref('')
 const currentChartName = ref('')
+const currentChartBenchmark = ref(null)
 
 function openChartDialog(row) {
   if (!row || !row.symbol) return
   currentChartSymbol.value = row.symbol
   currentChartName.value = row.name || ''
+  currentChartBenchmark.value = {
+    benchmarkSymbol: row.benchmarkSymbol,
+    benchmarkName: row.benchmarkName,
+    benchmarkChangePercent: row.benchmarkChangePercent,
+    relativeStrength: row.relativeStrength,
+    relativeStrengthStatus: row.relativeStrengthStatus,
+    relativeStrengthLevel: row.relativeStrengthLevel,
+  }
   chartDialogVisible.value = true
 }
+
+function getSentimentColor(score) {
+  if (!score) return '#909399'
+  if (score >= 75) return '#f56c6c'
+  if (score >= 58) return '#67c23a'
+  if (score >= 45) return '#409eff'
+  if (score >= 30) return '#e6a23c'
+  return '#909399'
+}
+
+function getSentimentTagType(level) {
+  switch (level) {
+    case 'FEVER': return 'danger'
+    case 'BULLISH': return 'success'
+    case 'NEUTRAL': return 'primary'
+    case 'BEARISH': return 'warning'
+    case 'PANIC': return 'info'
+    default: return 'info'
+  }
+}
+
 
 let timer = null
 
@@ -634,7 +945,7 @@ function toggleAutoRefresh(val) {
 async function loadAllData(showLoading = true) {
   if (showLoading) refreshing.value = true
   try {
-    await Promise.all([loadSummary(), loadPositions(), loadHistory()])
+    await Promise.all([loadMarketOverview(), loadSummary(), loadPositions(), loadHistory()])
     const d = new Date()
     const pad = (n) => String(n).padStart(2, '0')
     lastUpdateTime.value = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
@@ -643,9 +954,19 @@ async function loadAllData(showLoading = true) {
   }
 }
 
+async function loadMarketOverview() {
+  try {
+    const data = await getMarketOverview()
+    marketOverview.value = data || null
+  } catch (err) {
+    console.error('拉取大盘晴雨表失败:', err)
+  }
+}
+
 async function loadSummary() {
   try {
     const data = await getAccountSummary()
+
     summary.value = data || {}
   } catch (err) {
     console.error(err)
@@ -997,5 +1318,419 @@ function formatRate(val) {
 .clickable-stock-name:hover {
   color: #409eff;
   text-decoration: underline;
+}
+
+/* 全市场宏观大盘晴雨表 */
+.market-overview-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border: 1px solid #ebeef5;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.market-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.market-tag-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #303133;
+  padding-right: 12px;
+  border-right: 1px solid #ebeef5;
+}
+
+.market-tag-title .pulse-dot {
+  width: 8px;
+  height: 8px;
+  background: #409eff;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 6px rgba(64, 158, 255, 0.6);
+}
+
+.indices-list {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.index-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  background: #f8f9fb;
+  border: 1px solid #ebeef5;
+  transition: all 0.2s;
+}
+
+.index-pill.pill-up {
+  background: #fef0f0;
+  border-color: #fde2e2;
+}
+
+.index-pill.pill-down {
+  background: #f0f9eb;
+  border-color: #e1f3d8;
+}
+
+.index-pill .idx-name {
+  font-weight: bold;
+  color: #303133;
+}
+
+.index-pill .idx-points {
+  font-weight: 600;
+}
+
+.index-pill.pill-up .idx-points,
+.index-pill.pill-up .idx-chg {
+  color: #f56c6c;
+}
+
+.index-pill.pill-down .idx-points,
+.index-pill.pill-down .idx-chg {
+  color: #67c23a;
+}
+
+.market-banner-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.market-metric {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #606266;
+}
+
+.metric-label {
+  color: #909399;
+}
+
+.metric-val {
+  font-weight: bold;
+  color: #303133;
+}
+
+.sentiment-box {
+  background: #fafafa;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid #ebeef5;
+}
+
+.sentiment-score {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.sentiment-badge {
+  font-weight: bold;
+  letter-spacing: 0.2px;
+}
+
+.sentiment-tip-icon {
+  font-size: 13px;
+  color: #909399;
+  cursor: pointer;
+}
+
+.rs-badge {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  height: 20px;
+}
+
+/* 🎯 今日操盘行动看板 */
+.today-action-card {
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  border: 1px solid #ebeef5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+}
+
+.action-card-header {
+  margin-bottom: 4px;
+}
+
+.action-card-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.action-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-title-icon {
+  font-size: 20px;
+}
+
+.action-title-text {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.action-badge {
+  font-weight: 600;
+  border-radius: 12px;
+}
+
+.action-card-subtitle {
+  font-size: 12px;
+  color: #909399;
+}
+
+/* 待办网格 */
+.action-items-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.action-item-card {
+  background: #fbfcfe;
+  border-radius: 8px;
+  border: 1px solid #e4e7ed;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: all 0.2s;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.02);
+}
+
+.action-item-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.action-card-buy {
+  border-left: 4px solid #67c23a;
+  background: linear-gradient(135deg, #f6ffed 0%, #ffffff 30%);
+}
+
+.action-card-sell {
+  border-left: 4px solid #f56c6c;
+  background: linear-gradient(135deg, #fff1f0 0%, #ffffff 30%);
+}
+
+.action-card-alert {
+  border-left: 4px solid #e6a23c;
+  background: linear-gradient(135deg, #fffbe6 0%, #ffffff 30%);
+}
+
+.action-card-default {
+  border-left: 4px solid #409eff;
+}
+
+.action-item-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.action-item-stock {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stock-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #303133;
+  cursor: pointer;
+}
+
+.stock-name:hover {
+  color: #409eff;
+  text-decoration: underline;
+}
+
+.stock-symbol {
+  font-size: 13px;
+  color: #606266;
+  font-weight: 600;
+}
+
+.action-signal-tag {
+  font-weight: bold;
+}
+
+.action-item-desc {
+  font-size: 12px;
+  color: #606266;
+  line-height: 1.5;
+  margin-bottom: 12px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px dashed #e4e7ed;
+}
+
+.action-item-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  background: #ffffff;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  border: 1px solid #ebeef5;
+}
+
+.metric-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.m-label {
+  font-size: 11px;
+  color: #909399;
+}
+
+.m-val {
+  font-size: 13px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.action-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.btn-execute {
+  font-weight: bold;
+  letter-spacing: 0.3px;
+}
+
+.action-extra-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ☕ 躺平待机看板 */
+.zen-relax-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-top: 10px;
+  border: 1px dashed #cbd5e1;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.zen-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 320px;
+}
+
+.zen-tea-emoji {
+  font-size: 36px;
+  line-height: 1;
+}
+
+.zen-headline {
+  font-size: 15px;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 4px;
+}
+
+.zen-quote {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.zen-right {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.zen-monitor-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.zen-tag-list {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.zen-stock-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+
+.zen-stock-pill:hover {
+  border-color: #409eff;
+  transform: translateY(-1px);
+}
+
+.zen-stock-pill .pill-name {
+  font-weight: 600;
+  color: #334155;
+}
+
+.zen-stock-pill .pill-price {
+  font-weight: 600;
+  color: #475569;
 }
 </style>

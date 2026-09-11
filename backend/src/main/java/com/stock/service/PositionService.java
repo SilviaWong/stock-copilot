@@ -2,6 +2,8 @@ package com.stock.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.stock.common.BusinessException;
+import com.stock.dto.IndexQuoteDTO;
+import com.stock.dto.MarketOverviewDTO;
 import com.stock.dto.QuoteDTO;
 import com.stock.entity.Position;
 import com.stock.entity.TransactionRecord;
@@ -36,7 +38,8 @@ public class PositionService {
     private TradeSignalService tradeSignalService;
 
     /**
-     * 查询持仓列表 (结合实时行情计算现价、市值、浮动盈亏与预警)
+     * 查询持仓列表并注入实时行情、券商摊薄保本成本、相对大盘强弱及做T建议
+     *
      * @param onlyHolding 是否仅展示当前仍持有的标的 (hold_quantity > 0)
      */
     public List<PositionVO> listPositions(Boolean onlyHolding) {
@@ -50,6 +53,12 @@ public class PositionService {
         if (list.isEmpty()) {
             return Collections.emptyList();
         }
+
+        // 提取全市场大盘全景
+        MarketOverviewDTO marketOverview = quoteService.getMarketOverview();
+        Map<String, IndexQuoteDTO> indexMap = (marketOverview != null && marketOverview.getIndices() != null)
+                ? marketOverview.getIndices().stream().collect(Collectors.toMap(IndexQuoteDTO::getSymbol, idx -> idx, (a, b) -> a))
+                : Collections.emptyMap();
 
         // 提取所有持仓标的代码，批量拉取最新实时行情
         List<String> symbols = list.stream()
@@ -185,11 +194,49 @@ public class PositionService {
                 vo.setTotalPnlRate(BigDecimal.ZERO);
             }
 
-            // 智能交易与做T决策推荐信号
-            vo.setTradeSignal(tradeSignalService.evaluateSignal(p, vo, symbolRecords));
+            // 绑定基准指数并计算相对强弱 (Relative Strength / Alpha)
+            QuoteService.BenchmarkInfo bm = quoteService.resolveBenchmark(p.getSymbol());
+            vo.setBenchmarkSymbol(bm.getSymbol());
+            vo.setBenchmarkName(bm.getName());
+
+            IndexQuoteDTO bmQuote = indexMap.get(bm.getSymbol());
+            if (bmQuote != null && bmQuote.getChangePercent() != null) {
+                vo.setBenchmarkChangePercent(bmQuote.getChangePercent());
+                if (vo.getChangePercent() != null) {
+                    BigDecimal rs = vo.getChangePercent().subtract(bmQuote.getChangePercent()).setScale(2, RoundingMode.HALF_UP);
+                    vo.setRelativeStrength(rs);
+
+                    double rsVal = rs.doubleValue();
+                    if (rsVal >= 1.5) {
+                        vo.setRelativeStrengthStatus("🚀 强势领涨");
+                        vo.setRelativeStrengthLevel("success");
+                    } else if (rsVal >= 0.5) {
+                        vo.setRelativeStrengthStatus("🟢 偏强共振");
+                        vo.setRelativeStrengthLevel("success");
+                    } else if (rsVal > -0.5) {
+                        vo.setRelativeStrengthStatus("⚪ 同步大盘");
+                        vo.setRelativeStrengthLevel("info");
+                    } else if (rsVal > -1.5) {
+                        vo.setRelativeStrengthStatus("🟡 偏弱滞涨");
+                        vo.setRelativeStrengthLevel("warning");
+                    } else {
+                        vo.setRelativeStrengthStatus("🔴 逆势走弱");
+                        vo.setRelativeStrengthLevel("danger");
+                    }
+                }
+            } else {
+                vo.setBenchmarkChangePercent(BigDecimal.ZERO);
+                vo.setRelativeStrength(BigDecimal.ZERO);
+                vo.setRelativeStrengthStatus("⚪ 待关联基准");
+                vo.setRelativeStrengthLevel("info");
+            }
+
+            // 智能交易与做T决策推荐信号 (融入大盘风控过滤器)
+            vo.setTradeSignal(tradeSignalService.evaluateSignal(p, vo, symbolRecords, marketOverview));
 
             return vo;
         }).collect(Collectors.toList());
+
     }
 
     /**
