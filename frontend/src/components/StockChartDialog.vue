@@ -502,8 +502,26 @@ async function fetchCurrentChartData() {
   }
 }
 
+// 生成 A 股 1 日标准分时交易时间序列 (全天固定 241 个点: 上午 121 点 + 下午 120 点)
+function generateFixedMinuteTimes() {
+  const times = []
+  // 上午 09:30 - 11:30 (共 121 个点: 09:30, 09:31, ..., 11:30)
+  for (let m = 9 * 60 + 30; m <= 11 * 60 + 30; m++) {
+    const hh = String(Math.floor(m / 60)).padStart(2, '0')
+    const mm = String(m % 60).padStart(2, '0')
+    times.push(`${hh}:${mm}`)
+  }
+  // 下午 13:01 - 15:00 (共 120 个点: 13:01, 13:02, ..., 15:00)
+  for (let a = 13 * 60 + 1; a <= 15 * 60; a++) {
+    const hh = String(Math.floor(a / 60)).padStart(2, '0')
+    const mm = String(a % 60).padStart(2, '0')
+    times.push(`${hh}:${mm}`)
+  }
+  return times
+}
+
 // -------------------------------------------------------------
-// 1. 绘制 1 日分时图
+// 1. 绘制 1 日分时图 (参考主流券商/雪球标准: 固定全天 09:30 ~ 15:00 交易时间轴)
 // -------------------------------------------------------------
 function renderMinuteChart(data) {
   if (!data || !data.times || data.times.length === 0) {
@@ -536,17 +554,76 @@ function renderMinuteChart(data) {
   if (!chart) return
 
   const preClose = Number(data.preClose) || (data.prices.length > 0 ? Number(data.prices[0]) : 1.0)
-  const prices = data.prices.map(p => Number(p))
-  const avgPrices = data.avgPrices.map(p => Number(p))
-  const volumes = data.volumes || []
   const costPrice = data.costPrice ? Number(data.costPrice) : null
   const dilutedCostPrice = data.dilutedCostPrice ? Number(data.dilutedCostPrice) : null
 
-  // 计算对称 Y 轴区间 (围绕昨收盘价 preClose 上下对称)
+  // 1. 生成券商标准全天固定 241 个分钟交易时间刻度
+  const fixedTimes = generateFixedMinuteTimes()
+  const timeIndexMap = new Map()
+  fixedTimes.forEach((t, idx) => timeIndexMap.set(t, idx))
+
+  // 初始化全天 241 个槽位，默认全为 null (右侧未来未交易时段自然留白)
+  const fullPrices = new Array(fixedTimes.length).fill(null)
+  const fullAvgPrices = new Array(fixedTimes.length).fill(null)
+  const fullVolumes = new Array(fixedTimes.length).fill(null)
+
+  let lastValidIdx = -1
+  if (data.times && data.times.length > 0) {
+    for (let i = 0; i < data.times.length; i++) {
+      const t = data.times[i]
+      let targetIdx = timeIndexMap.get(t)
+      if (targetIdx === undefined) {
+        if (t === '13:00') {
+          // 腾讯等源若在中午休市重开返回 13:00，将其匹配至 11:30（午间衔接点）
+          targetIdx = timeIndexMap.get('11:30')
+        } else if (t < '09:30') {
+          targetIdx = 0
+        }
+      }
+      if (targetIdx !== undefined && targetIdx >= 0 && targetIdx < fixedTimes.length) {
+        const p = data.prices && data.prices[i] !== undefined && data.prices[i] !== null ? Number(data.prices[i]) : null
+        const ap = data.avgPrices && data.avgPrices[i] !== undefined && data.avgPrices[i] !== null ? Number(data.avgPrices[i]) : null
+        const v = data.volumes && data.volumes[i] !== undefined && data.volumes[i] !== null ? Number(data.volumes[i]) : null
+
+        fullPrices[targetIdx] = p
+        fullAvgPrices[targetIdx] = ap
+        fullVolumes[targetIdx] = v
+        if (targetIdx > lastValidIdx && p !== null) {
+          lastValidIdx = targetIdx
+        }
+      }
+    }
+  }
+
+  // 对盘中已交易时段但偶发缺失的分钟做前向补齐 (Forward Fill)，保证已有折线平滑；
+  // lastValidIdx 之后（未来尚未开市/交易的时段）保持严格为 null，实现券商标准的右侧留白网格
+  if (lastValidIdx >= 0) {
+    let runningPrice = preClose
+    let runningAvg = preClose
+    for (let i = 0; i <= lastValidIdx; i++) {
+      if (fullPrices[i] !== null && !isNaN(fullPrices[i])) {
+        runningPrice = fullPrices[i]
+      } else {
+        fullPrices[i] = runningPrice
+      }
+      if (fullAvgPrices[i] !== null && !isNaN(fullAvgPrices[i])) {
+        runningAvg = fullAvgPrices[i]
+      } else {
+        fullAvgPrices[i] = runningAvg
+      }
+      if (fullVolumes[i] === null || isNaN(fullVolumes[i])) {
+        fullVolumes[i] = 0
+      }
+    }
+  }
+
+  // 计算对称 Y 轴区间 (仅基于实际发生的非 null 价格波动，围绕昨收盘价 preClose 上下对称)
   let priceMaxDiff = 0
-  prices.forEach(p => {
-    const d = Math.abs(p - preClose)
-    if (d > priceMaxDiff) priceMaxDiff = d
+  fullPrices.forEach(p => {
+    if (p !== null && !isNaN(p)) {
+      const d = Math.abs(p - preClose)
+      if (d > priceMaxDiff) priceMaxDiff = d
+    }
   })
   priceMaxDiff = Math.max(priceMaxDiff, preClose * 0.015)
   let maxDiff = priceMaxDiff * 1.18
@@ -566,7 +643,7 @@ function renderMinuteChart(data) {
   const yMax = Number((preClose + maxDiff).toFixed(3))
   const maxPercent = Number((maxDiff / preClose * 100).toFixed(2))
 
-  // 标的持仓生命线 MarkLines (使用内部徽章，避免右侧溢出截断)
+  // 标的持仓生命线 MarkLines (横贯全天 09:30-15:00，使用内部徽章避免截断)
   const markLineData = [
     {
       name: '昨收中轴',
@@ -623,22 +700,27 @@ function renderMinuteChart(data) {
     })
   }
 
-  // 当日买卖打点 markPoint
+  // 当日买卖打点 markPoint (精准映射到固定 241 点全天时间轴)
   const markPointData = []
   if (data.tradeMarkers && data.tradeMarkers.length > 0) {
     data.tradeMarkers.forEach(m => {
-      // 提取时分并寻找在 times 中的最佳匹配下标
       const markerTime = m.tradeTime && m.tradeTime.length >= 16 ? m.tradeTime.substring(11, 16) : ''
-      let matchIdx = data.times.indexOf(markerTime)
-      if (matchIdx === -1 && data.times.length > 0) {
-        matchIdx = data.times.length - 1
+      let matchIdx = fixedTimes.indexOf(markerTime)
+      if (matchIdx === -1) {
+        if (markerTime < '09:30') matchIdx = 0
+        else if (markerTime >= '11:30' && markerTime <= '13:00') matchIdx = 120
+        else if (markerTime > '15:00') matchIdx = 240
+        else {
+          matchIdx = fixedTimes.findIndex(t => t >= markerTime)
+          if (matchIdx === -1) matchIdx = fixedTimes.length - 1
+        }
       }
       if (matchIdx >= 0) {
         const isBuy = m.action === 'BUY'
         markPointData.push({
           name: isBuy ? '当日买入' : '当日卖出',
           value: m.label || (isBuy ? 'B' : 'S'),
-          coord: [data.times[matchIdx], Number(m.price)],
+          coord: [fixedTimes[matchIdx], Number(m.price)],
           itemStyle: {
             color: isBuy ? '#67c23a' : '#f56c6c',
           },
@@ -674,24 +756,27 @@ function renderMinuteChart(data) {
         let vol = null
 
         params.forEach(p => {
-          if (p.seriesName === '分时现价') price = p.value
-          if (p.seriesName === '分时均价') avg = p.value
-          if (p.seriesName === '成交量') vol = p.value
+          if (p.seriesName === '分时现价' && p.value !== null && p.value !== undefined) price = Number(p.value)
+          if (p.seriesName === '分时均价' && p.value !== null && p.value !== undefined) avg = Number(p.value)
+          if (p.seriesName === '成交量' && p.value !== null && p.value !== undefined) vol = p.value
         })
 
-        const diff = price !== null ? price - preClose : 0
-        const pct = price !== null ? (diff / preClose * 100) : 0
+        // 未发生交易的时间段不显示浮层
+        if (price === null || isNaN(price)) {
+          return ''
+        }
+
+        const diff = price - preClose
+        const pct = (diff / preClose * 100)
         const color = diff >= 0 ? '#f56c6c' : '#67c23a'
         const sign = diff >= 0 ? '+' : ''
 
         let html = `<div style="font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #ebeef5; padding-bottom: 2px;">⏰ 时间: ${time}</div>`
-        if (price !== null) {
-          html += `<div>现价: <b style="color: ${color};">${price.toFixed(3)}</b> (${sign}${diff.toFixed(3)}, ${sign}${pct.toFixed(2)}%)</div>`
-        }
-        if (avg !== null) {
+        html += `<div>现价: <b style="color: ${color};">${price.toFixed(3)}</b> (${sign}${diff.toFixed(3)}, ${sign}${pct.toFixed(2)}%)</div>`
+        if (avg !== null && !isNaN(avg)) {
           html += `<div>均价: <b style="color: #e6a23c;">${avg.toFixed(3)}</b></div>`
         }
-        if (vol !== null) {
+        if (vol !== null && !isNaN(vol)) {
           html += `<div>量: <b style="color: #606266;">${vol} 手</b></div>`
         }
         return html
@@ -707,30 +792,56 @@ function renderMinuteChart(data) {
     xAxis: [
       {
         type: 'category',
-        data: data.times,
+        data: fixedTimes,
         boundaryGap: false,
         axisLine: { lineStyle: { color: '#dcdfe6' } },
+        axisTick: {
+          show: true,
+          interval: (index) => {
+            return index === 0 || index === 60 || index === 120 || index === 180 || index === 240
+          },
+        },
         axisLabel: {
           color: '#94a3b8',
           fontSize: 11,
-          interval: (index, value) => {
-            return value === '09:30' || value === '10:30' || value === '11:30' || value === '14:00' || value === '15:00'
+          showMinLabel: true,
+          showMaxLabel: true,
+          interval: (index) => {
+            return index === 0 || index === 60 || index === 120 || index === 180 || index === 240
           },
-          formatter: (val) => {
-            if (val === '11:30') return '11:30/13:00'
+          formatter: (val, index) => {
+            if (index === 120 || val === '11:30') return '11:30/13:00'
             return val
           },
         },
-        splitLine: { show: true, lineStyle: { color: '#f1f5f9', type: 'dashed' } },
+        splitLine: {
+          show: true,
+          interval: (index) => {
+            return index === 60 || index === 120 || index === 180
+          },
+          lineStyle: {
+            color: '#f1f5f9',
+            type: 'dashed',
+          },
+        },
       },
       {
         type: 'category',
         gridIndex: 1,
-        data: data.times,
+        data: fixedTimes,
         boundaryGap: false,
         axisLine: { lineStyle: { color: '#dcdfe6' } },
         axisLabel: { show: false },
-        splitLine: { show: false },
+        splitLine: {
+          show: true,
+          interval: (index) => {
+            return index === 60 || index === 120 || index === 180
+          },
+          lineStyle: {
+            color: '#f1f5f9',
+            type: 'dashed',
+          },
+        },
       },
     ],
     yAxis: [
@@ -776,9 +887,10 @@ function renderMinuteChart(data) {
       {
         name: '分时现价',
         type: 'line',
-        data: prices,
+        data: fullPrices,
         smooth: false,
         showSymbol: false,
+        connectNulls: false,
         lineStyle: { color: '#3388ff', width: 1.6 },
         areaStyle: {
           color: new window.echarts.graphic.LinearGradient(0, 0, 0, 1, [
@@ -800,9 +912,10 @@ function renderMinuteChart(data) {
       {
         name: '分时均价',
         type: 'line',
-        data: avgPrices,
+        data: fullAvgPrices,
         smooth: true,
         showSymbol: false,
+        connectNulls: false,
         lineStyle: { color: '#e6a23c', width: 1.2 },
       },
       {
@@ -810,12 +923,24 @@ function renderMinuteChart(data) {
         type: 'bar',
         xAxisIndex: 1,
         yAxisIndex: 2,
-        data: volumes.map((v, i) => ({
-          value: v,
-          itemStyle: {
-            color: prices[i] >= (prices[i - 1] || preClose) ? '#f56c6c' : '#67c23a',
-          },
-        })),
+        data: fullVolumes.map((v, i) => {
+          if (v === null || v === undefined) return null
+          const currPrice = fullPrices[i]
+          let prevPrice = preClose
+          for (let j = i - 1; j >= 0; j--) {
+            if (fullPrices[j] !== null && fullPrices[j] !== undefined) {
+              prevPrice = fullPrices[j]
+              break
+            }
+          }
+          const isUp = currPrice !== null ? currPrice >= prevPrice : true
+          return {
+            value: v,
+            itemStyle: {
+              color: isUp ? '#f56c6c' : '#67c23a',
+            },
+          }
+        }),
       },
     ],
   }
