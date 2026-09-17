@@ -23,6 +23,16 @@ public class FiveDayChartDTO {
     private BigDecimal costPrice;         // 买入均价
     private BigDecimal dilutedCostPrice;  // 做T摊薄保本价
 
+    // 实时最新行情指标 (供图表顶部概览看板直接使用，解决切换股票时数据残留问题)
+    private BigDecimal latestPrice;
+    private BigDecimal preClose;
+    private BigDecimal changeAmount;
+    private BigDecimal changePercent;
+    private BigDecimal high;
+    private BigDecimal low;
+    private Long totalVolume;
+    private BigDecimal totalAmount;
+
     // 连续扁平序列 (用于 ECharts 一次性绘制连续跨日走势)
     private List<String> times;           // ["09-04 09:30", ...]
     private List<BigDecimal> prices;      // 连续分时价格

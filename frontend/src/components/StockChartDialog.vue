@@ -322,9 +322,9 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onBeforeUnmount, shallowRef } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, shallowRef, watch } from 'vue'
 import { Refresh, Cpu, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
-import { getMinuteChart, getFiveDayChart, getKlineChart, predictNextDayTrend } from '../api'
+import { getMinuteChart, getFiveDayChart, getKlineChart, predictNextDayTrend, getQuoteDetail } from '../api'
 
 const props = defineProps({
   modelValue: {
@@ -378,11 +378,11 @@ const aiPredictVisible = ref(false)
 const predictLoading = ref(false)
 const predictData = ref(null)
 
-// 头部行情摘要
+// 头部行情摘要 (彻底防止数据缓存残留)
 const quoteInfo = ref({
   latestPrice: null,
-  changeAmount: 0,
-  changePercent: 0,
+  changeAmount: null,
+  changePercent: null,
   open: null,
   preClose: null,
   high: null,
@@ -435,8 +435,73 @@ function formatAmount(amt) {
   return '¥' + Number(amt).toFixed(0)
 }
 
+// 核心重置函数：切换标的或关闭对话框时，彻底清空上一股票的行情残留缓存
+function resetChartState() {
+  quoteInfo.value = {
+    latestPrice: null,
+    changeAmount: null,
+    changePercent: null,
+    open: null,
+    preClose: null,
+    high: null,
+    low: null,
+    totalVolume: null,
+    totalAmount: null,
+  }
+  positionInfo.value = {
+    holdQuantity: 0,
+    costPrice: null,
+    dilutedCostPrice: null,
+  }
+  allMarkers.value = []
+  currentPivotPoints.value = null
+  cachedKlineData.value = null
+  predictData.value = null
+  noData.value = false
+}
+
+// 独立并发拉取当前标的最新行情，保证无论当前切换至哪个 Tab，顶部看板永远显示当前标的真实数据
+async function fetchRealtimeQuote(symbol) {
+  if (!symbol) return
+  try {
+    const quote = await getQuoteDetail(symbol)
+    if (quote && quote.symbol === props.symbol) {
+      quoteInfo.value = {
+        latestPrice: quote.currentPrice,
+        changeAmount: quote.changeAmount,
+        changePercent: quote.changePercent,
+        open: quote.openPrice,
+        preClose: quote.yesterdayClose,
+        high: quote.highPrice,
+        low: quote.lowPrice,
+        totalVolume: quoteInfo.value.totalVolume,
+        totalAmount: quoteInfo.value.totalAmount,
+      }
+      if (quote.name) {
+        currentName.value = quote.name
+      }
+    }
+  } catch (e) {
+    console.warn('获取标的独立实时行情失败:', e)
+  }
+}
+
+// 监听 symbol 切换：一旦打开不同股票，立即清空上一标的所有残余数据并重新拉取
+watch(() => props.symbol, (newSymbol, oldSymbol) => {
+  if (newSymbol && newSymbol !== oldSymbol) {
+    resetChartState()
+    currentName.value = props.name || ''
+    if (visible.value) {
+      activeChartTab.value = 'minute'
+      fetchCurrentChartData()
+    }
+  }
+})
+
 function handleDialogOpened() {
+  resetChartState()
   currentName.value = props.name || ''
+  activeChartTab.value = 'minute'
   nextTick(() => {
     initChartInstance()
     fetchCurrentChartData()
@@ -444,6 +509,7 @@ function handleDialogOpened() {
 }
 
 function handleDialogClosed() {
+  resetChartState()
   if (chartInstance.value) {
     chartInstance.value.dispose()
     chartInstance.value = null
@@ -483,22 +549,36 @@ async function fetchCurrentChartData() {
   loading.value = true
   noData.value = false
 
+  const currentSymbol = props.symbol
+  // 无论当前处于哪个 Tab，立即并发请求当前股票的最新行情
+  fetchRealtimeQuote(currentSymbol)
+
   try {
     if (activeChartTab.value === 'minute') {
-      const res = await getMinuteChart(props.symbol)
-      renderMinuteChart(res)
+      const res = await getMinuteChart(currentSymbol)
+      if (props.symbol === currentSymbol) {
+        renderMinuteChart(res)
+      }
     } else if (activeChartTab.value === 'fiveDay') {
-      const res = await getFiveDayChart(props.symbol)
-      renderFiveDayChart(res)
+      const res = await getFiveDayChart(currentSymbol)
+      if (props.symbol === currentSymbol) {
+        renderFiveDayChart(res)
+      }
     } else if (activeChartTab.value === 'kline') {
-      const res = await getKlineChart(props.symbol)
-      renderKlineChart(res)
+      const res = await getKlineChart(currentSymbol)
+      if (props.symbol === currentSymbol) {
+        renderKlineChart(res)
+      }
     }
   } catch (err) {
-    console.error('获取走势图失败:', err)
-    noData.value = true
+    if (props.symbol === currentSymbol) {
+      console.error('获取走势图失败:', err)
+      noData.value = true
+    }
   } finally {
-    loading.value = false
+    if (props.symbol === currentSymbol) {
+      loading.value = false
+    }
   }
 }
 
@@ -964,6 +1044,20 @@ function renderFiveDayChart(data) {
     dilutedCostPrice: data.dilutedCostPrice,
   }
 
+  if (data.latestPrice !== undefined && data.latestPrice !== null) {
+    quoteInfo.value = {
+      latestPrice: data.latestPrice,
+      changeAmount: data.changeAmount,
+      changePercent: data.changePercent,
+      open: data.open || (data.prices && data.prices.length > 0 ? data.prices[0] : null),
+      preClose: data.preClose,
+      high: data.high,
+      low: data.low,
+      totalVolume: data.totalVolume,
+      totalAmount: data.totalAmount,
+    }
+  }
+
   if (!chartInstance.value) initChartInstance()
   const chart = chartInstance.value
   if (!chart) return
@@ -1288,6 +1382,20 @@ function renderKlineChart(data) {
     dilutedCostPrice: data.dilutedCostPrice,
   }
   allMarkers.value = data.tradeMarkers || []
+
+  if (data.latestPrice !== undefined && data.latestPrice !== null) {
+    quoteInfo.value = {
+      latestPrice: data.latestPrice,
+      changeAmount: data.changeAmount,
+      changePercent: data.changePercent,
+      open: (data.values && data.values.length > 0 ? data.values[data.values.length - 1][0] : null),
+      preClose: data.preClose,
+      high: data.high,
+      low: data.low,
+      totalVolume: data.totalVolume,
+      totalAmount: data.totalAmount,
+    }
+  }
 
   if (!chartInstance.value) initChartInstance()
   const chart = chartInstance.value

@@ -625,6 +625,31 @@ public class QuoteService {
             if (response.statusCode() == 200 && StringUtils.hasText(response.body())) {
                 JsonNode root = objectMapper.readTree(response.body());
                 JsonNode stockNode = root.path("data").path(tCode);
+
+                if (stockNode.has("qt") && stockNode.path("qt").has(tCode)) {
+                    JsonNode qt = stockNode.path("qt").path(tCode);
+                    if (!StringUtils.hasText(posInfo.name) && qt.size() > 1) {
+                        builder.name(qt.get(1).asText());
+                    }
+                    if (qt.size() > 34) {
+                        builder.latestPrice(toBigDecimal(qt.path(3).asText()));
+                        builder.preClose(toBigDecimal(qt.path(4).asText()));
+                        builder.changeAmount(toBigDecimal(qt.path(31).asText()));
+                        builder.changePercent(toBigDecimal(qt.path(32).asText()));
+                        builder.high(toBigDecimal(qt.path(33).asText()));
+                        builder.low(toBigDecimal(qt.path(34).asText()));
+                    }
+                    if (qt.size() > 36) {
+                        builder.totalVolume(toLong(qt.path(36).asText()));
+                    }
+                    if (qt.size() > 37) {
+                        BigDecimal totalAmtWan = toBigDecimal(qt.path(37).asText());
+                        if (totalAmtWan != null) {
+                            builder.totalAmount(totalAmtWan.multiply(BigDecimal.valueOf(10000)));
+                        }
+                    }
+                }
+
                 JsonNode daysNode = stockNode.path("data");
 
                 if (daysNode.isArray() && daysNode.size() > 0) {
@@ -749,6 +774,23 @@ public class QuoteService {
                     JsonNode qt = stockNode.path("qt").path(tCode);
                     if (!StringUtils.hasText(posInfo.name) && qt.size() > 1) {
                         builder.name(qt.get(1).asText());
+                    }
+                    if (qt.size() > 34) {
+                        builder.latestPrice(toBigDecimal(qt.path(3).asText()));
+                        builder.preClose(toBigDecimal(qt.path(4).asText()));
+                        builder.changeAmount(toBigDecimal(qt.path(31).asText()));
+                        builder.changePercent(toBigDecimal(qt.path(32).asText()));
+                        builder.high(toBigDecimal(qt.path(33).asText()));
+                        builder.low(toBigDecimal(qt.path(34).asText()));
+                    }
+                    if (qt.size() > 36) {
+                        builder.totalVolume(toLong(qt.path(36).asText()));
+                    }
+                    if (qt.size() > 37) {
+                        BigDecimal totalAmtWan = toBigDecimal(qt.path(37).asText());
+                        if (totalAmtWan != null) {
+                            builder.totalAmount(totalAmtWan.multiply(BigDecimal.valueOf(10000)));
+                        }
                     }
                 }
 
