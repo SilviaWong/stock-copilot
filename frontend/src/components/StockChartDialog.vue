@@ -1116,9 +1116,30 @@ function renderFiveDayChart(data) {
   const chart = chartInstance.value
   if (!chart) return
 
-  const prices = data.prices.map(p => Number(p))
-  const avgPrices = data.avgPrices.map(p => Number(p))
-  const volumes = data.volumes || []
+  // 严格过滤掉 15:00 之后的非交易时间点 (严格对齐 A 股 09:30-11:30, 13:00-15:00 正常交易时段)
+  const times = []
+  const prices = []
+  const avgPrices = []
+  const volumes = []
+  const splitIndexes = []
+  let lastDate = ''
+
+  data.times.forEach((timeStr, idx) => {
+    const parts = timeStr.split(' ')
+    const datePart = parts[0]
+    const timePart = parts[1] || ''
+    if (timePart <= '15:00') {
+      if (datePart !== lastDate) {
+        splitIndexes.push(times.length)
+        lastDate = datePart
+      }
+      times.push(timeStr)
+      prices.push(Number(data.prices[idx]))
+      avgPrices.push(Number(data.avgPrices[idx]))
+      volumes.push(data.volumes ? data.volumes[idx] : 0)
+    }
+  })
+
   const basePrice = Number(data.basePrice) || (prices.length > 0 ? prices[0] : 1.0)
   const costPrice = data.costPrice ? Number(data.costPrice) : null
   const dilutedCostPrice = data.dilutedCostPrice ? Number(data.dilutedCostPrice) : null
@@ -1127,7 +1148,7 @@ function renderFiveDayChart(data) {
   const markPointData = []
   const fiveDayMarkers = []
 
-  if (data.tradeMarkers && data.tradeMarkers.length > 0 && data.times && data.times.length > 0) {
+  if (data.tradeMarkers && data.tradeMarkers.length > 0 && times.length > 0) {
     data.tradeMarkers.forEach(m => {
       // 必须精确校验交易完整日期是否属于当前连续 5 日 (严格杜绝跨年同月同日如 2025-09-11 错匹到 2026-09-11)
       const tradeFullDate = m.tradeDate || (m.tradeTime && m.tradeTime.length >= 10 ? m.tradeTime.substring(0, 10) : '')
@@ -1150,8 +1171,8 @@ function renderFiveDayChart(data) {
 
       // 寻找该日期在 5 日时间轴中的所有点
       const datePoints = []
-      for (let i = 0; i < data.times.length; i++) {
-        if (data.times[i].startsWith(targetDateLabel + ' ')) {
+      for (let i = 0; i < times.length; i++) {
+        if (times[i].startsWith(targetDateLabel + ' ')) {
           datePoints.push(i)
         }
       }
@@ -1160,7 +1181,7 @@ function renderFiveDayChart(data) {
       if (datePoints.length === 0) return
 
       let targetTime = targetDateLabel + (targetTimePart ? ' ' + targetTimePart : '')
-      let matchIdx = data.times.indexOf(targetTime)
+      let matchIdx = times.indexOf(targetTime)
 
       if (matchIdx === -1) {
         if (!targetTimePart || targetTimePart < '09:30') {
@@ -1168,14 +1189,14 @@ function renderFiveDayChart(data) {
         } else if (targetTimePart > '15:00') {
           matchIdx = datePoints[datePoints.length - 1]
         } else {
-          const found = datePoints.find(i => data.times[i] >= targetTime)
+          const found = datePoints.find(i => times[i] >= targetTime)
           matchIdx = (found !== undefined) ? found : datePoints[datePoints.length - 1]
         }
       }
 
       if (matchIdx >= 0) {
         const isBuy = m.action === 'BUY'
-        const matchedTimeStr = data.times[matchIdx]
+        const matchedTimeStr = times[matchIdx]
         const tradePrice = Number(m.price)
 
         const markerObj = {
@@ -1244,11 +1265,11 @@ function renderFiveDayChart(data) {
 
   // 垂直分割线 (5天开盘点)
   const splitMarkLines = []
-  if (data.splitIndexes && data.splitIndexes.length > 0) {
-    data.splitIndexes.forEach((idx) => {
-      if (idx > 0 && idx < data.times.length) {
+  if (splitIndexes && splitIndexes.length > 0) {
+    splitIndexes.forEach((idx) => {
+      if (idx > 0 && idx < times.length) {
         splitMarkLines.push({
-          xAxis: data.times[idx],
+          xAxis: times[idx],
           lineStyle: { color: '#cbd5e1', type: 'dashed', width: 1 },
           label: { show: false }, // 避免在垂直分割线上放置文字与底部日期发生碰撞重叠
         })
@@ -1347,7 +1368,7 @@ function renderFiveDayChart(data) {
     xAxis: [
       {
         type: 'category',
-        data: data.times,
+        data: times,
         boundaryGap: false,
         axisLine: { lineStyle: { color: '#dcdfe6' } },
         axisLabel: {
@@ -1355,7 +1376,7 @@ function renderFiveDayChart(data) {
           fontSize: 11,
           fontWeight: '600',
           interval: (index) => {
-            return data.splitIndexes && data.splitIndexes.includes(index)
+            return splitIndexes && splitIndexes.includes(index)
           },
           formatter: (val) => {
             return val ? val.split(' ')[0] : ''
@@ -1366,7 +1387,7 @@ function renderFiveDayChart(data) {
       {
         type: 'category',
         gridIndex: 1,
-        data: data.times,
+        data: times,
         boundaryGap: false,
         axisLabel: { show: false },
         splitLine: { show: false },

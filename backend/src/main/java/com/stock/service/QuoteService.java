@@ -693,6 +693,10 @@ public class QuoteService {
                                 String[] parts = mItem.asText().split(" ");
                                 if (parts.length >= 4) {
                                     String t = parts[0];
+                                    // 过滤 15:00 之后的盘后固定价格交易数据，严格符合标准交易时间 (09:30-11:30, 13:00-15:00)
+                                    if (t.compareTo("1500") > 0) {
+                                        continue;
+                                    }
                                     String formattedTime = dateLabel + " " + ((t.length() == 4) ? t.substring(0, 2) + ":" + t.substring(2, 4) : t);
                                     BigDecimal price = new BigDecimal(parts[1]);
                                     long cumVol = Long.parseLong(parts[2]);
