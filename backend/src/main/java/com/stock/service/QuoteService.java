@@ -606,6 +606,7 @@ public class QuoteService {
                 .holdQuantity(posInfo.holdQuantity)
                 .costPrice(posInfo.costPrice)
                 .dilutedCostPrice(posInfo.dilutedCostPrice)
+                .tradeMarkers(posInfo.allMarkers != null ? posInfo.allMarkers : new ArrayList<>())
                 .times(new ArrayList<>())
                 .prices(new ArrayList<>())
                 .avgPrices(new ArrayList<>())
@@ -666,6 +667,7 @@ public class QuoteService {
                     List<Long> volumes = new ArrayList<>();
                     List<Integer> splitIndexes = new ArrayList<>();
                     List<String> dayLabels = new ArrayList<>();
+                    List<String> fullDates = new ArrayList<>();
                     BigDecimal basePrice = null;
 
                     for (JsonNode dayNode : dayList) {
@@ -673,7 +675,11 @@ public class QuoteService {
                         String dateLabel = (rawDate.length() == 8)
                                 ? rawDate.substring(4, 6) + "-" + rawDate.substring(6, 8)
                                 : rawDate;
+                        String fullDate = (rawDate.length() == 8)
+                                ? rawDate.substring(0, 4) + "-" + rawDate.substring(4, 6) + "-" + rawDate.substring(6, 8)
+                                : rawDate;
                         dayLabels.add(dateLabel);
+                        fullDates.add(fullDate);
                         splitIndexes.add(times.size());
 
                         if (basePrice == null && dayNode.has("prec")) {
@@ -716,6 +722,7 @@ public class QuoteService {
                     builder.volumes(volumes);
                     builder.splitIndexes(splitIndexes);
                     builder.dayLabels(dayLabels);
+                    builder.fullDates(fullDates);
                 }
             }
         } catch (Exception e) {

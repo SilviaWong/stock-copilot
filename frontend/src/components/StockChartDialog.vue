@@ -234,10 +234,12 @@
           <i class="chip-line line-t"></i>做T保本线 (¥{{ Number(positionInfo.dilutedCostPrice).toFixed(3) }})
         </span>
       </div>
-      <div v-if="activeChartTab === 'kline'" class="legend-kline-tips">
+      <div v-if="activeChartTab === 'kline' || historyMarkersCount > 0" class="legend-kline-tips">
         <span class="marker-chip buy"><i class="marker-dot buy-dot"></i>B 买入</span>
         <span class="marker-chip sell"><i class="marker-dot sell-dot"></i>S 卖出</span>
-        <span class="tip-text">💡 提示：支持滚轮缩放、拖拽平移，鼠标悬停打点可查阅详细复盘</span>
+        <span class="tip-text">
+          {{ activeChartTab === 'kline' ? '💡 提示：支持滚轮缩放、拖拽平移，鼠标悬停打点可查阅详细复盘' : '💡 提示：鼠标悬停打点或走势可查阅实战成交明细' }}
+        </span>
       </div>
     </div>
 
@@ -797,12 +799,23 @@ function renderMinuteChart(data) {
       }
       if (matchIdx >= 0) {
         const isBuy = m.action === 'BUY'
+        const matchedTimeStr = fixedTimes[matchIdx]
+        const markerObj = {
+          ...m,
+          matchedTime: matchedTimeStr,
+        }
         markPointData.push({
           name: isBuy ? '当日买入' : '当日卖出',
           value: m.label || (isBuy ? 'B' : 'S'),
-          coord: [fixedTimes[matchIdx], Number(m.price)],
+          coord: [matchedTimeStr, Number(m.price)],
+          symbol: 'pin',
+          symbolSize: 28,
           itemStyle: {
             color: isBuy ? '#67c23a' : '#f56c6c',
+            borderColor: '#ffffff',
+            borderWidth: 1,
+            shadowBlur: 3,
+            shadowColor: 'rgba(0,0,0,0.25)',
           },
           label: {
             show: true,
@@ -810,7 +823,7 @@ function renderMinuteChart(data) {
             fontWeight: 'bold',
             fontSize: 10,
           },
-          rawMarker: m,
+          rawMarker: markerObj,
         })
       }
     })
@@ -859,6 +872,27 @@ function renderMinuteChart(data) {
         if (vol !== null && !isNaN(vol)) {
           html += `<div>量: <b style="color: #606266;">${vol} 手</b></div>`
         }
+
+        // 检查该分时点是否有实战成交
+        const pointTrades = (data.tradeMarkers || []).filter(m => {
+          const markerTime = m.tradeTime && m.tradeTime.length >= 16 ? m.tradeTime.substring(11, 16) : ''
+          return markerTime === time
+        })
+        if (pointTrades.length > 0) {
+          html += `<div style="margin-top: 6px; padding: 4px 6px; border-radius: 4px; background: #fdf6ec; border: 1px dashed #e6a23c;">`
+          html += `<div style="font-weight: bold; color: #d97706; margin-bottom: 2px;">🎯 今日实战成交 (${pointTrades.length}笔):</div>`
+          pointTrades.forEach((t) => {
+            const isB = t.action === 'BUY'
+            html += `<div style="font-size: 11px; margin-top: 2px;">
+              <span style="color: ${isB ? '#67c23a' : '#f56c6c'}; font-weight: bold;">[${isB ? '买入' : '卖出'}]</span>
+              单价: ¥${Number(t.price).toFixed(3)} | 股数: ${t.quantity}股
+              ${t.realizedPnl ? ` | 盈亏: <b style="color:${Number(t.realizedPnl)>=0?'#f56c6c':'#67c23a'}">${Number(t.realizedPnl)>=0?'+':''}${t.realizedPnl}元</b>` : ''}
+              ${t.strategyTag ? ` (${t.strategyTag})` : ''}
+            </div>`
+          })
+          html += `</div>`
+        }
+
         return html
       },
     },
@@ -986,6 +1020,26 @@ function renderMinuteChart(data) {
         markPoint: {
           symbol: 'pin',
           symbolSize: 28,
+          tooltip: {
+            formatter: (param) => {
+              const m = param.data?.rawMarker
+              if (!m) return ''
+              const isB = m.action === 'BUY'
+              let html = `<div style="font-weight: bold; border-bottom: 1px solid #ebeef5; padding-bottom: 3px; margin-bottom: 4px;">
+                🎯 今日实战${isB ? '买入' : '卖出'}打点
+              </div>`
+              html += `<div>成交时间: <b>${m.tradeTime || m.tradeDate}</b></div>`
+              html += `<div>成交单价: <b style="color: ${isB ? '#67c23a' : '#f56c6c'};">¥${Number(m.price).toFixed(3)}</b></div>`
+              html += `<div>成交股数: <b>${m.quantity} 股</b></div>`
+              if (m.amount) html += `<div>成交金额: <b>¥${Number(m.amount).toFixed(2)}</b></div>`
+              if (m.realizedPnl) {
+                const pnl = Number(m.realizedPnl)
+                html += `<div>实现盈亏: <b style="color: ${pnl >= 0 ? '#f56c6c' : '#67c23a'};">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} 元</b></div>`
+              }
+              if (m.strategyTag) html += `<div>策略标签: <b>${m.strategyTag}</b></div>`
+              return html
+            },
+          },
           data: markPointData,
         },
       },
@@ -1069,7 +1123,96 @@ function renderFiveDayChart(data) {
   const costPrice = data.costPrice ? Number(data.costPrice) : null
   const dilutedCostPrice = data.dilutedCostPrice ? Number(data.dilutedCostPrice) : null
 
-  // 对称 Y 轴计算 (基于实际价格波动，7% 以内平滑容纳成本线)
+  // 匹配连续 5 日内的实战买卖打点 markPoint (精准映射到 5 日分时时间轴)
+  const markPointData = []
+  const fiveDayMarkers = []
+
+  if (data.tradeMarkers && data.tradeMarkers.length > 0 && data.times && data.times.length > 0) {
+    data.tradeMarkers.forEach(m => {
+      // 必须精确校验交易完整日期是否属于当前连续 5 日 (严格杜绝跨年同月同日如 2025-09-11 错匹到 2026-09-11)
+      const tradeFullDate = m.tradeDate || (m.tradeTime && m.tradeTime.length >= 10 ? m.tradeTime.substring(0, 10) : '')
+      if (data.fullDates && data.fullDates.length > 0) {
+        if (!data.fullDates.includes(tradeFullDate)) {
+          return // 不属于本 5 日交易区间的历史流水直接跳过
+        }
+      }
+
+      let targetDateLabel = ''
+      if (tradeFullDate && tradeFullDate.length >= 10) {
+        targetDateLabel = tradeFullDate.substring(5, 10) // "2026-09-16" -> "09-16"
+      }
+
+      // 提取时分 HH:mm
+      let targetTimePart = ''
+      if (m.tradeTime && m.tradeTime.length >= 16) {
+        targetTimePart = m.tradeTime.substring(11, 16) // "09:37"
+      }
+
+      // 寻找该日期在 5 日时间轴中的所有点
+      const datePoints = []
+      for (let i = 0; i < data.times.length; i++) {
+        if (data.times[i].startsWith(targetDateLabel + ' ')) {
+          datePoints.push(i)
+        }
+      }
+
+      // 若该日期在时间轴中找不到任何点，则跳过
+      if (datePoints.length === 0) return
+
+      let targetTime = targetDateLabel + (targetTimePart ? ' ' + targetTimePart : '')
+      let matchIdx = data.times.indexOf(targetTime)
+
+      if (matchIdx === -1) {
+        if (!targetTimePart || targetTimePart < '09:30') {
+          matchIdx = datePoints[0]
+        } else if (targetTimePart > '15:00') {
+          matchIdx = datePoints[datePoints.length - 1]
+        } else {
+          const found = datePoints.find(i => data.times[i] >= targetTime)
+          matchIdx = (found !== undefined) ? found : datePoints[datePoints.length - 1]
+        }
+      }
+
+      if (matchIdx >= 0) {
+        const isBuy = m.action === 'BUY'
+        const matchedTimeStr = data.times[matchIdx]
+        const tradePrice = Number(m.price)
+
+        const markerObj = {
+          ...m,
+          matchedTime: matchedTimeStr,
+        }
+        fiveDayMarkers.push(markerObj)
+
+        markPointData.push({
+          name: isBuy ? '实战买入' : '实战卖出',
+          value: m.label || (isBuy ? 'B' : 'S'),
+          coord: [matchedTimeStr, tradePrice],
+          symbol: 'pin',
+          symbolSize: 26,
+          itemStyle: {
+            color: isBuy ? '#67c23a' : '#f56c6c',
+            borderColor: '#ffffff',
+            borderWidth: 1,
+            shadowBlur: 4,
+            shadowColor: 'rgba(0,0,0,0.25)',
+          },
+          label: {
+            show: true,
+            color: '#ffffff',
+            fontWeight: 'bold',
+            fontSize: 10,
+          },
+          rawMarker: markerObj,
+        })
+      }
+    })
+  }
+
+  // 更新顶部生命线横幅中的 5 日打点统计
+  allMarkers.value = fiveDayMarkers
+
+  // 对称 Y 轴计算 (基于实际价格波动，7% 以内平滑容纳成本线与实战打点)
   let priceMaxDiff = 0
   prices.forEach(p => {
     const d = Math.abs(p - basePrice)
@@ -1077,6 +1220,14 @@ function renderFiveDayChart(data) {
   })
   priceMaxDiff = Math.max(priceMaxDiff, basePrice * 0.015)
   let maxDiff = priceMaxDiff * 1.18
+
+  // 纳入 5 日实战打点价格，确保打点不被 Y 轴边缘裁切
+  fiveDayMarkers.forEach(m => {
+    if (m.price) {
+      const md = Math.abs(Number(m.price) - basePrice) * 1.08
+      if (md > maxDiff) maxDiff = md
+    }
+  })
 
   const maxAllowedCostDiff = basePrice * 0.07
   if (costPrice && Math.abs(costPrice - basePrice) <= maxAllowedCostDiff) {
@@ -1162,12 +1313,31 @@ function renderFiveDayChart(data) {
         const diff = price !== null ? price - basePrice : 0
         const pct = price !== null ? (diff / basePrice * 100) : 0
         const color = diff >= 0 ? '#f56c6c' : '#67c23a'
-        return `
+        let html = `
           <div style="font-weight: bold; border-bottom: 1px solid #ebeef5; padding-bottom: 2px;">📅 ${time}</div>
           <div>价格: <b style="color: ${color};">${price !== null ? price.toFixed(3) : '-'}</b> (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)</div>
           ${avg !== null ? `<div>均价: <b style="color: #e6a23c;">${avg.toFixed(3)}</b></div>` : ''}
           ${vol !== null ? `<div>量: <b>${vol} 手</b></div>` : ''}
         `
+
+        // 检查该分时点是否有实战买卖记录
+        const minuteTrades = fiveDayMarkers.filter(m => m.matchedTime === time)
+        if (minuteTrades.length > 0) {
+          html += `<div style="margin-top: 6px; padding: 4px 6px; border-radius: 4px; background: #fdf6ec; border: 1px dashed #e6a23c;">`
+          html += `<div style="font-weight: bold; color: #d97706; margin-bottom: 2px;">🎯 实战成交 (${minuteTrades.length}笔):</div>`
+          minuteTrades.forEach((t) => {
+            const isB = t.action === 'BUY'
+            html += `<div style="font-size: 11px; margin-top: 2px;">
+              <span style="color: ${isB ? '#67c23a' : '#f56c6c'}; font-weight: bold;">[${isB ? '买入' : '卖出'}]</span>
+              单价: ¥${Number(t.price).toFixed(3)} | 股数: ${t.quantity}股
+              ${t.realizedPnl ? ` | 盈亏: <b style="color:${Number(t.realizedPnl)>=0?'#f56c6c':'#67c23a'}">${Number(t.realizedPnl)>=0?'+':''}${t.realizedPnl}元</b>` : ''}
+              ${t.strategyTag ? ` (${t.strategyTag})` : ''}
+            </div>`
+          })
+          html += `</div>`
+        }
+
+        return html
       },
     },
     grid: [
@@ -1239,6 +1409,31 @@ function renderFiveDayChart(data) {
           silent: false,
           symbol: ['none', 'none'],
           data: splitMarkLines,
+        },
+        markPoint: {
+          symbol: 'pin',
+          symbolSize: 26,
+          tooltip: {
+            formatter: (param) => {
+              const m = param.data?.rawMarker
+              if (!m) return ''
+              const isB = m.action === 'BUY'
+              let html = `<div style="font-weight: bold; border-bottom: 1px solid #ebeef5; padding-bottom: 3px; margin-bottom: 4px;">
+                🎯 实战${isB ? '买入' : '卖出'}打点
+              </div>`
+              html += `<div>成交时间: <b>${m.tradeTime || m.tradeDate}</b></div>`
+              html += `<div>成交单价: <b style="color: ${isB ? '#67c23a' : '#f56c6c'};">¥${Number(m.price).toFixed(3)}</b></div>`
+              html += `<div>成交股数: <b>${m.quantity} 股</b></div>`
+              if (m.amount) html += `<div>成交金额: <b>¥${Number(m.amount).toFixed(2)}</b></div>`
+              if (m.realizedPnl) {
+                const pnl = Number(m.realizedPnl)
+                html += `<div>实现盈亏: <b style="color: ${pnl >= 0 ? '#f56c6c' : '#67c23a'};">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} 元</b></div>`
+              }
+              if (m.strategyTag) html += `<div>策略标签: <b>${m.strategyTag}</b></div>`
+              return html
+            },
+          },
+          data: markPointData,
         },
       },
       {
